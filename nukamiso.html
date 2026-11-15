@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Nukamiso — Subtitle Editor</title>
+<style>
+:root{
+  --bg:#f5f1ea; --panel:#fffdf8; --ink:#2b2620; --sub:#7a7264;
+  --accent:#b3541e; --accent2:#3f6212; --line:#e3dccf; --warn:#b45309; --err:#b91c1c;
+  --hl:#fde68a;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Kaku Gothic ProN","Yu Gothic UI",Meiryo,sans-serif;background:var(--bg);color:var(--ink);font-size:14px;line-height:1.5}
+header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
+header h1{font-size:18px;margin:0 8px 0 0;letter-spacing:.02em}
+header h1 small{color:var(--sub);font-size:11px;font-weight:normal}
+.btn{appearance:none;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;padding:6px 10px;cursor:pointer;font-size:13px}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn.on{background:var(--accent2);color:#fff;border-color:var(--accent2)}
+.btn:disabled{opacity:.45;cursor:default}
+select.btn,input[type=text],input[type=number],textarea{font:inherit}
+main{display:grid;grid-template-columns:minmax(340px,1.2fr) minmax(300px,1fr);gap:12px;padding:12px;max-width:1500px;margin:0 auto}
+@media (max-width:900px){main{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}
+.panel h2{font-size:14px;margin:0 0 8px;color:var(--accent)}
+.panel h2 .tag{float:right;font-size:11px;color:var(--sub);font-weight:normal}
+video{width:100%;background:#000;border-radius:8px;max-height:300px}
+#waveCanvas{width:100%;height:110px;background:#1c1917;border-radius:8px;cursor:pointer;display:block}
+table.cues{width:100%;border-collapse:collapse}
+table.cues th{font-size:11px;color:var(--sub);text-align:left;padding:2px 4px;border-bottom:1px solid var(--line)}
+table.cues td{padding:3px 4px;border-bottom:1px solid var(--line);vertical-align:top}
+table.cues tr.current td{background:var(--hl)}
+table.cues input[type=text].tc{width:86px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+table.cues textarea{width:100%;min-height:34px;resize:vertical;font-size:13px}
+.rowbtns{white-space:nowrap}
+.rowbtns .btn{padding:2px 6px;font-size:11px}
+#issues{font-size:12px;max-height:160px;overflow:auto}
+#issues .error{color:var(--err)} #issues .warning{color:var(--warn)} #issues .info{color:var(--sub)}
+#asrStatus{font-size:12px;color:var(--sub)}
+#asrInterim{font-size:13px;color:var(--accent);min-height:1.4em}
+.dictrow{display:flex;gap:6px;margin-bottom:6px}
+.dictrow input{flex:1}
+footer{padding:10px 14px;color:var(--sub);font-size:12px;text-align:center}
+.hidden{display:none}
+.toolbar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+label.chk{font-size:12px;color:var(--sub);display:inline-flex;gap:4px;align-items:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>Nukamiso <small id="verLabel"></small></h1>
+  <button class="btn" id="btnOpenSub" data-i18n="openSub">字幕を開く</button>
+  <input type="file" id="fileSub" accept=".srt,.vtt,.ass,.txt" class="hidden">
+  <button class="btn" id="btnOpenMedia" data-i18n="openMedia">動画/音声を開く</button>
+  <input type="file" id="fileMedia" accept="video/*,audio/*" class="hidden">
+  <label><span data-i18n="saveAs">保存形式</span>
+    <select class="btn" id="selFormat">
+      <option value="srt">SRT</option><option value="vtt">VTT</option>
+      <option value="ass">ASS</option><option value="txt">TXT</option>
+    </select>
+  </label>
+  <button class="btn primary" id="btnSave" data-i18n="save">保存</button>
+  <button class="btn" id="btnValidate" data-i18n="validate">検証</button>
+  <button class="btn" id="btnLang">EN</button>
+</header>
+<main>
+  <section>
+    <div class="panel">
+      <h2><span data-i18n="cues">字幕キュー</span><span class="tag">Phase A/B</span></h2>
+      <div class="toolbar">
+        <button class="btn" id="btnAddCue" data-i18n="addCue">＋追加</button>
+        <button class="btn" id="btnShift" data-i18n="shiftAll">全体シフト</button>
+        <input type="text" id="shiftSec" size="6" placeholder="+0.5s">
+        <label class="chk"><input type="checkbox" id="chkDictAuto" checked><span data-i18n="dictAuto">辞書を自動適用</span></label>
+        <button class="btn" id="btnDictApply" data-i18n="dictApply">辞書を全キューに適用</button>
+      </div>
+      <div style="max-height:520px;overflow:auto">
+      <table class="cues"><thead><tr>
+        <th data-i18n="colStart">開始</th><th data-i18n="colEnd">終了</th><th data-i18n="colText">テキスト</th><th></th>
+      </tr></thead><tbody id="cueBody"></tbody></table>
+      </div>
+      <div id="issues"></div>
+    </div>
+    <div class="panel">
+      <h2><span data-i18n="dictTitle">ユーザー辞書</span><span class="tag">Phase D</span></h2>
+      <div id="dictList"></div>
+      <div class="dictrow">
+        <input type="text" id="dictFrom" data-i18n-ph="dictFrom" placeholder="誤認識（例: ぬかみそ）">
+        <input type="text" id="dictTo" data-i18n-ph="dictTo" placeholder="正表記（例: 糠味噌）">
+        <button class="btn" id="btnDictAdd" data-i18n="add">追加</button>
+      </div>
+    </div>
+  </section>
+  <section>
+    <div class="panel">
+      <h2><span data-i18n="media">メディア</span><span class="tag">Phase A/E</span></h2>
+      <video id="media" controls playsinline></video>
+      <canvas id="waveCanvas" width="900" height="110"></canvas>
+      <div class="toolbar" style="margin-top:8px">
+        <button class="btn" id="btnAsr">🎙 <span data-i18n="asrStart">音声入力開始</span></button>
+        <select class="btn" id="selAsrLang">
+          <option value="ja-JP">日本語</option><option value="en-US">English</option>
+        </select>
+        <span id="asrStatus"></span>
+      </div>
+      <div id="asrInterim"></div>
+      <div id="asrUnsupported" class="hidden" style="color:var(--warn);font-size:12px" data-i18n="asrUnsupported">このブラウザは音声認識に対応していません。手入力で全機能が使えます。</div>
+    </div>
+    <div class="panel">
+      <h2><span data-i18n="track2">翻訳トラック（第2言語）</span><span class="tag">Phase C</span></h2>
+      <div class="toolbar">
+        <button class="btn" id="btnCopyTiming" data-i18n="copyTiming">タイミングを複写</button>
+        <button class="btn" id="btnSave2" data-i18n="saveTrack2">第2トラックを保存</button>
+      </div>
+      <div style="max-height:300px;overflow:auto">
+      <table class="cues"><thead><tr>
+        <th data-i18n="colStart">開始</th><th data-i18n="colEnd">終了</th><th data-i18n="colText">テキスト</th><th></th>
+      </tr></thead><tbody id="cueBody2"></tbody></table>
+      </div>
+    </div>
+  </section>
+</main>
+<footer>Nukamiso — Single-file / Zero-dependency / Local-first / Zero-telemetry. <span data-i18n="footerNote">データはこの端末の外に出ません。</span></footer>
+
+<script>
+'use strict';
+/* ==== NK CORE BEGIN ==== */
+/* Nukamiso core logic: pure functions, no DOM. Extracted by tests/. */
+var NK = (typeof window !== 'undefined' && window.NK) ? window.NK : {};
+if (typeof window !== 'undefined') window.NK = NK;
+
+NK.version = '2.0.0';
+NK.config = { zeroDep: true, singleFile: true, localFirst: true, zeroTelemetry: true };
+NK.features = { phaseA: true, phaseB: true, phaseC: true, phaseD: true, phaseE: true, phaseF: true, phaseG: true };
+
+/* ---------- time utilities (all times are milliseconds) ---------- */
+NK.time = {
+  pad: function (n, l) { var s = String(n); while (s.length < (l || 2)) s = '0' + s; return s; },
+  /* "HH:MM:SS,mmm" | "HH:MM:SS.mmm" | "MM:SS.mmm" | "H:MM:SS.cc" -> ms, or NaN */
+  parse: function (str) {
+    if (typeof str !== 'string') return NaN;
+    var m = str.trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$/);
+    if (!m) return NaN;
+    var h = m[1] ? parseInt(m[1], 10) : 0;
+    var min = parseInt(m[2], 10), sec = parseInt(m[3], 10);
+    var frac = m[4] || '';
+    var ms = 0;
+    if (frac.length === 1) ms = parseInt(frac, 10) * 100;
+    else if (frac.length === 2) ms = parseInt(frac, 10) * 10;
+    else if (frac.length >= 3) ms = parseInt(frac.slice(0, 3), 10);
+    return ((h * 60 + min) * 60 + sec) * 1000 + ms;
+  },
+  formatSRT: function (ms) { return NK.time._fmt(ms, ','); },
+  formatVTT: function (ms) { return NK.time._fmt(ms, '.'); },
+  _fmt: function (ms, sep) {
+    if (!(ms >= 0)) ms = 0;
+    ms = Math.round(ms);
+    var h = Math.floor(ms / 3600000), min = Math.floor(ms / 60000) % 60,
+        sec = Math.floor(ms / 1000) % 60, m = ms % 1000;
+    return NK.time.pad(h) + ':' + NK.time.pad(min) + ':' + NK.time.pad(sec) + sep + NK.time.pad(m, 3);
+  },
+  /* ASS uses H:MM:SS.cc (centiseconds) */
+  formatASS: function (ms) {
+    if (!(ms >= 0)) ms = 0;
+    var cs = Math.round(ms / 10);
+    var h = Math.floor(cs / 360000), min = Math.floor(cs / 6000) % 60,
+        sec = Math.floor(cs / 100) % 60, c = cs % 100;
+    return h + ':' + NK.time.pad(min) + ':' + NK.time.pad(sec) + '.' + NK.time.pad(c);
+  },
+  parseASS: function (str) {
+    if (typeof str !== 'string') return NaN;
+    var m = str.trim().match(/^(\d+):(\d{1,2}):(\d{1,2})\.(\d{1,2})$/);
+    if (!m) return NaN;
+    var cs = parseInt(m[4].length === 1 ? m[4] + '0' : m[4], 10);
+    return ((parseInt(m[1], 10) * 60 + parseInt(m[2], 10)) * 60 + parseInt(m[3], 10)) * 1000 + cs * 10;
+  }
+};
+
+/* ---------- format detection ---------- */
+NK.detectFormat = function (text) {
+  if (typeof text !== 'string' || !text) return 'unknown';
+  if (/^\s*WEBVTT/.test(text)) return 'vtt';
+  if (/\[Script Info\]/i.test(text) || /\[Events\]/i.test(text)) return 'ass';
+  if (/\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}\s*-->/.test(text)) return 'srt';
+  return 'unknown';
+};
+
+/* ---------- parsers: text -> [{start,end,text}] (ms). Never throw. ---------- */
+NK.parse = {
+  srt: function (text) {
+    var cues = [];
+    try {
+      var blocks = String(text).replace(/\r\n?/g, '\n').split(/\n\s*\n/);
+      for (var i = 0; i < blocks.length; i++) {
+        var lines = blocks[i].split('\n').filter(function (l) { return l.trim() !== ''; });
+        if (!lines.length) continue;
+        var ti = -1, j;
+        for (j = 0; j < lines.length; j++) { if (lines[j].indexOf('-->') >= 0) { ti = j; break; } }
+        if (ti < 0) continue;
+        var parts = lines[ti].split('-->');
+        var start = NK.time.parse(parts[0]);
+        var end = NK.time.parse((parts[1] || '').trim().split(/\s+/)[0]);
+        if (isNaN(start) || isNaN(end)) continue;
+        var body = lines.slice(ti + 1).join('\n').trim();
+        cues.push({ start: start, end: end, text: body });
+      }
+    } catch (e) { /* fuzz-safety: return what we have */ }
+    return cues;
+  },
+  vtt: function (text) {
+    var cues = [];
+    try {
+      var clean = String(text).replace(/\r\n?/g, '\n');
+      var blocks = clean.split(/\n\s*\n/);
+      for (var i = 0; i < blocks.length; i++) {
+        var block = blocks[i];
+        if (/^\s*(WEBVTT|NOTE|STYLE|REGION)/.test(block)) continue;
+        var lines = block.split('\n').filter(function (l) { return l.trim() !== ''; });
+        if (!lines.length) continue;
+        var ti = -1, j;
+        for (j = 0; j < lines.length; j++) { if (lines[j].indexOf('-->') >= 0) { ti = j; break; } }
+        if (ti < 0) continue;
+        var parts = lines[ti].split('-->');
+        var start = NK.time.parse(parts[0]);
+        var end = NK.time.parse((parts[1] || '').trim().split(/\s+/)[0]);
+        if (isNaN(start) || isNaN(end)) continue;
+        var body = lines.slice(ti + 1).join('\n')
+          .replace(/<[^>]*>/g, '').trim();
+        cues.push({ start: start, end: end, text: body });
+      }
+    } catch (e) { }
+    return cues;
+  },
+  ass: function (text) {
+    var cues = [];
+    try {
+      var lines = String(text).replace(/\r\n?/g, '\n').split('\n');
+      var inEvents = false, fmt = null;
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (/^\s*\[Events\]/i.test(line)) { inEvents = true; continue; }
+        if (/^\s*\[/.test(line)) { inEvents = false; continue; }
+        if (!inEvents) continue;
+        if (/^\s*Format:/i.test(line)) {
+          fmt = line.replace(/^\s*Format:/i, '').split(',').map(function (s) { return s.trim().toLowerCase(); });
+          continue;
+        }
+        if (!/^\s*Dialogue:/i.test(line) || !fmt) continue;
+        var rest = line.replace(/^\s*Dialogue:/i, '').replace(/^\s/, '');
+        /* Text is the last Format field and may itself contain commas. */
+        var nFields = fmt.length;
+        var fields = [], cur = '', count = 0, k;
+        for (k = 0; k < rest.length; k++) {
+          var ch = rest[k];
+          if (ch === ',' && count < nFields - 1) { fields.push(cur); cur = ''; count++; }
+          else cur += ch;
+        }
+        fields.push(cur);
+        var si = fmt.indexOf('start'), ei = fmt.indexOf('end'), ti2 = fmt.indexOf('text');
+        if (si < 0 || ei < 0 || ti2 < 0) continue;
+        var start = NK.time.parseASS(fields[si]);
+        var end = NK.time.parseASS(fields[ei]);
+        if (isNaN(start) || isNaN(end)) continue;
+        var body = (fields[ti2] || '')
+          .replace(/\{[^}]*\}/g, '')
+          .replace(/\\N/g, '\n').replace(/\\h/g, ' ')
+          .trim();
+        cues.push({ start: start, end: end, text: body });
+      }
+    } catch (e) { }
+    return cues;
+  },
+  /* Plain text: one cue per non-empty line, sequential 2s slots. */
+  txt: function (text) {
+    var cues = [];
+    try {
+      var lines = String(text).replace(/\r\n?/g, '\n').split('\n');
+      var idx = 0;
+      for (var i = 0; i < lines.length; i++) {
+        var t = lines[i].trim();
+        if (!t) continue;
+        cues.push({ start: idx * 2000, end: idx * 2000 + 1800, text: t });
+        idx++;
+      }
+    } catch (e) { }
+    return cues;
+  },
+  auto: function (text) {
+    var f = NK.detectFormat(text);
+    if (f === 'srt') return NK.parse.srt(text);
+    if (f === 'vtt') return NK.parse.vtt(text);
+    if (f === 'ass') return NK.parse.ass(text);
+    return [];
+  }
+};
+
+/* ---------- serializers ---------- */
+function nkSorted(cues) {
+  return (cues || []).slice().sort(function (a, b) { return (a.start - b.start) || (a.end - b.end); });
+}
+NK.serialize = {
+  srt: function (cues) {
+    var cs = nkSorted(cues), out = [];
+    for (var i = 0; i < cs.length; i++) {
+      out.push(String(i + 1));
+      out.push(NK.time.formatSRT(cs[i].start) + ' --> ' + NK.time.formatSRT(cs[i].end));
+      out.push(String(cs[i].text || ''));
+      out.push('');
+    }
+    return out.join('\n');
+  },
+  vtt: function (cues) {
+    var cs = nkSorted(cues), out = ['WEBVTT', ''];
+    for (var i = 0; i < cs.length; i++) {
+      out.push(NK.time.formatVTT(cs[i].start) + ' --> ' + NK.time.formatVTT(cs[i].end));
+      out.push(String(cs[i].text || ''));
+      out.push('');
+    }
+    return out.join('\n');
+  },
+  ass: function (cues) {
+    var cs = nkSorted(cues);
+    var head = [
+      '[Script Info]',
+      'Title: Nukamiso subtitles',
+      'ScriptType: v4.00+',
+      '',
+      '[V4+ Styles]',
+      'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+      'Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1',
+      '',
+      '[Events]',
+      'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text'
+    ];
+    var out = head.slice();
+    for (var i = 0; i < cs.length; i++) {
+      var body = String(cs[i].text || '').replace(/\r\n?/g, '\n').replace(/\n/g, '\\N');
+      out.push('Dialogue: 0,' + NK.time.formatASS(cs[i].start) + ',' + NK.time.formatASS(cs[i].end) +
+        ',Default,,0,0,0,,' + body);
+    }
+    return out.join('\n') + '\n';
+  },
+  txt: function (cues) {
+    var cs = nkSorted(cues), out = [];
+    for (var i = 0; i < cs.length; i++) out.push(String(cs[i].text || ''));
+    return out.join('\n') + (out.length ? '\n' : '');
+  }
+};
+
+/* ---------- validation ---------- */
+/* nkValidate(text) -> { format, cues, issues: [{level, message, cue?}] }.
+   issues is ALWAYS an array, including for format 'unknown'
+   (regression guard for the Phase E bug where unknown dropped issues). */
+NK.nkValidate = function (text) {
+  var format = NK.detectFormat(text);
+  var issues = [];
+  if (format === 'unknown') {
+    issues.push({ level: 'error', message: 'Could not detect subtitle format (expected SRT, VTT or ASS).' });
+    if (typeof text !== 'string' || !text || !text.trim()) {
+      issues.push({ level: 'error', message: 'Input is empty.' });
+    } else {
+      issues.push({ level: 'warning', message: 'No cue timestamps (--> lines) were found.' });
+    }
+    return { format: format, cues: [], issues: issues };
+  }
+  var cues = NK.parse.auto(text);
+  if (!cues.length) {
+    issues.push({ level: 'error', message: 'Format looks like ' + format.toUpperCase() + ' but no cues could be parsed.' });
+  }
+  return { format: format, cues: cues, issues: issues.concat(NK.validateCues(cues)) };
+};
+
+NK.validateCues = function (cues) {
+  var issues = [];
+  var cs = cues || [];
+  for (var i = 0; i < cs.length; i++) {
+    var c = cs[i];
+    if (!(c.end > c.start)) {
+      issues.push({ level: 'error', cue: i, message: 'Cue ' + (i + 1) + ': end time is not after start time.' });
+    }
+    if (i > 0 && c.start < cs[i - 1].start) {
+      issues.push({ level: 'warning', cue: i, message: 'Cue ' + (i + 1) + ': start time goes backwards.' });
+    }
+    if (i > 0 && c.start < cs[i - 1].end) {
+      issues.push({ level: 'warning', cue: i, message: 'Cue ' + (i + 1) + ': overlaps the previous cue.' });
+    }
+    if (!c.text || !String(c.text).trim()) {
+      issues.push({ level: 'warning', cue: i, message: 'Cue ' + (i + 1) + ': text is empty.' });
+    }
+    var lines = String(c.text || '').split('\n');
+    for (var j = 0; j < lines.length; j++) {
+      if (lines[j].length > 42) {
+        issues.push({ level: 'info', cue: i, message: 'Cue ' + (i + 1) + ': line ' + (j + 1) + ' is long (' + lines[j].length + ' chars > 42).' });
+      }
+    }
+    if (c.end - c.start > 7000) {
+      issues.push({ level: 'info', cue: i, message: 'Cue ' + (i + 1) + ': duration is long (' + ((c.end - c.start) / 1000).toFixed(1) + 's > 7s).' });
+    }
+  }
+  return issues;
+};
+
+/* ---------- user dictionary (Phase D) ---------- */
+NK.dict = {
+  entries: [], /* [{from, to}] */
+  apply: function (text, entries) {
+    var list = (entries || NK.dict.entries || []).slice()
+      .filter(function (e) { return e && e.from; })
+      .sort(function (a, b) { return b.from.length - a.from.length; });
+    var src = String(text == null ? '' : text);
+    if (!list.length || !src) return src;
+    /* Single left-to-right pass, longest match wins. Replacement output is
+       NOT rescanned, so rules never cascade into each other's results
+       (e.g. ぬかみそ→糠味噌 must not then trigger a 糠→… rule). */
+    var out = '', i = 0;
+    while (i < src.length) {
+      var hit = null;
+      for (var j = 0; j < list.length; j++) {
+        if (src.substr(i, list[j].from.length) === list[j].from) { hit = list[j]; break; }
+      }
+      if (hit) { out += hit.to; i += hit.from.length; }
+      else { out += src[i]; i++; }
+    }
+    return out;
+  },
+  applyToCues: function (cues, entries) {
+    return (cues || []).map(function (c) {
+      return { start: c.start, end: c.end, text: NK.dict.apply(c.text, entries) };
+    });
+  }
+};
+
+/* ---------- cue operations ---------- */
+NK.cues = {
+  shift: function (cues, deltaMs) {
+    return (cues || []).map(function (c) {
+      var s = Math.max(0, c.start + deltaMs);
+      var e = Math.max(s, c.end + deltaMs);
+      return { start: s, end: e, text: c.text };
+    });
+  },
+  split: function (cues, index) {
+    var out = (cues || []).slice();
+    var c = out[index];
+    if (!c) return out;
+    var mid = Math.floor((c.start + c.end) / 2);
+    var text = String(c.text || '');
+    var nl = text.indexOf('\n');
+    var t1 = text, t2 = '';
+    if (nl >= 0) { t1 = text.slice(0, nl); t2 = text.slice(nl + 1); }
+    out.splice(index, 1,
+      { start: c.start, end: mid, text: t1 },
+      { start: mid, end: c.end, text: t2 });
+    return out;
+  },
+  merge: function (cues, index) {
+    var out = (cues || []).slice();
+    if (index < 0 || index >= out.length - 1) return out;
+    var a = out[index], b = out[index + 1];
+    out.splice(index, 2, {
+      start: Math.min(a.start, b.start), end: Math.max(a.end, b.end),
+      text: (String(a.text || '') + '\n' + String(b.text || '')).replace(/^\n|\n$/g, '')
+    });
+    return out;
+  }
+};
+/* ==== NK CORE END ==== */
+</script>
+
+<script>
+'use strict';
+/* ==== UI (browser only) ==== */
+(function () {
+  if (typeof document === 'undefined') return;
+
+  var I18N = {
+    ja: { openSub: '字幕を開く', openMedia: '動画/音声を開く', saveAs: '保存形式', save: '保存', validate: '検証',
+      cues: '字幕キュー', addCue: '＋追加', shiftAll: '全体シフト', dictAuto: '辞書を自動適用', dictApply: '辞書を全キューに適用',
+      colStart: '開始', colEnd: '終了', colText: 'テキスト', dictTitle: 'ユーザー辞書', dictFrom: '誤認識（例: ぬかみそ）',
+      dictTo: '正表記（例: 糠味噌）', add: '追加', media: 'メディア', asrStart: '音声入力開始', asrStop: '音声入力停止',
+      asrUnsupported: 'このブラウザは音声認識に対応していません。手入力で全機能が使えます。',
+      track2: '翻訳トラック（第2言語）', copyTiming: 'タイミングを複写', saveTrack2: '第2トラックを保存',
+      footerNote: 'データはこの端末の外に出ません。', listening: '聞き取り中…', split: '分割', merge: '結合', del: '削除',
+      noIssues: '問題は見つかりませんでした。', saved: '保存しました' },
+    en: { openSub: 'Open subtitles', openMedia: 'Open video/audio', saveAs: 'Format', save: 'Save', validate: 'Validate',
+      cues: 'Subtitle cues', addCue: '+ Add', shiftAll: 'Shift all', dictAuto: 'Auto-apply dictionary', dictApply: 'Apply dictionary to all cues',
+      colStart: 'Start', colEnd: 'End', colText: 'Text', dictTitle: 'User dictionary', dictFrom: 'Mis-recognized (e.g. nukamiso)',
+      dictTo: 'Correct form', add: 'Add', media: 'Media', asrStart: 'Start voice input', asrStop: 'Stop voice input',
+      asrUnsupported: 'This browser does not support speech recognition. All features remain available via manual input.',
+      track2: 'Translation track (2nd language)', copyTiming: 'Copy timing', saveTrack2: 'Save track 2',
+      footerNote: 'Your data never leaves this device.', listening: 'Listening…', split: 'Split', merge: 'Merge', del: 'Delete',
+      noIssues: 'No issues found.', saved: 'Saved' }
+  };
+  var lang = 'ja';
+  function t(k) { return (I18N[lang] && I18N[lang][k]) || I18N.ja[k] || k; }
+  function applyI18n() {
+    document.querySelectorAll('[data-i18n]').forEach(function (el) { el.textContent = t(el.getAttribute('data-i18n')); });
+    document.querySelectorAll('[data-i18n-ph]').forEach(function (el) { el.placeholder = t(el.getAttribute('data-i18n-ph')); });
+    document.getElementById('btnLang').textContent = lang === 'ja' ? 'EN' : '日本語';
+    document.documentElement.lang = lang === 'ja' ? 'ja' : 'en';
+  }
+
+  var state = { cues: [], cues2: [], current: -1, mediaURL: null };
+  var $ = function (id) { return document.getElementById(id); };
+
+  /* ---------- persistence (localStorage only; nothing leaves the device) ---------- */
+  var LS_KEY = 'nukamiso.state.v1';
+  function persist() {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify({
+        cues: state.cues, cues2: state.cues2, dict: NK.dict.entries, lang: lang
+      }));
+    } catch (e) { }
+  }
+  var persistTimer = null;
+  function persistSoon() { clearTimeout(persistTimer); persistTimer = setTimeout(persist, 300); }
+  function restore() {
+    try {
+      var raw = localStorage.getItem(LS_KEY);
+      if (!raw) return;
+      var s = JSON.parse(raw);
+      if (Array.isArray(s.cues)) state.cues = s.cues;
+      if (Array.isArray(s.cues2)) state.cues2 = s.cues2;
+      if (Array.isArray(s.dict)) NK.dict.entries = s.dict;
+      if (s.lang) lang = s.lang;
+    } catch (e) { }
+  }
+
+  /* ---------- cue tables ---------- */
+  function tcInput(val, cls) {
+    var inp = document.createElement('input');
+    inp.type = 'text'; inp.className = 'tc ' + (cls || ''); inp.value = NK.time.formatSRT(val);
+    return inp;
+  }
+  function renderCues(tbody, cues, isMain) {
+    tbody.innerHTML = '';
+    cues.forEach(function (cue, i) {
+      var tr = document.createElement('tr');
+      if (isMain && i === state.current) tr.className = 'current';
+      var tdS = document.createElement('td'), tdE = document.createElement('td'),
+          tdT = document.createElement('td'), tdB = document.createElement('td');
+      var inS = tcInput(cue.start), inE = tcInput(cue.end);
+      inS.addEventListener('change', function () {
+        var v = NK.time.parse(inS.value); if (!isNaN(v)) { cue.start = v; persistSoon(); }
+        inS.value = NK.time.formatSRT(cue.start);
+      });
+      inE.addEventListener('change', function () {
+        var v = NK.time.parse(inE.value); if (!isNaN(v)) { cue.end = v; persistSoon(); }
+        inE.value = NK.time.formatSRT(cue.end);
+      });
+      var ta = document.createElement('textarea');
+      ta.value = cue.text || '';
+      ta.addEventListener('input', function () { cue.text = ta.value; persistSoon(); });
+      ta.addEventListener('focus', function () { if (mediaEl.duration) { try { mediaEl.currentTime = cue.start / 1000; } catch (e) { } } });
+      tdS.appendChild(inS); tdE.appendChild(inE); tdT.appendChild(ta);
+      tdB.className = 'rowbtns';
+      [['split', function () { setCues(isMain, NK.cues.split(cues, i)); }],
+       ['merge', function () { setCues(isMain, NK.cues.merge(cues, i)); }],
+       ['del', function () { var c = cues.slice(); c.splice(i, 1); setCues(isMain, c); }]]
+      .forEach(function (pair) {
+        var b = document.createElement('button');
+        b.className = 'btn'; b.textContent = t(pair[0]); b.addEventListener('click', pair[1]);
+        tdB.appendChild(b);
+      });
+      tr.appendChild(tdS); tr.appendChild(tdE); tr.appendChild(tdT); tr.appendChild(tdB);
+      tbody.appendChild(tr);
+    });
+  }
+  function setCues(isMain, cues) {
+    if (isMain) { state.cues = cues; renderCues($('cueBody'), cues, true); NK.wave.setCues(cues); }
+    else { state.cues2 = cues; renderCues($('cueBody2'), cues, false); }
+    persistSoon();
+  }
+  function renderAll() {
+    renderCues($('cueBody'), state.cues, true);
+    renderCues($('cueBody2'), state.cues2, false);
+    renderDict();
+    NK.wave.setCues(state.cues);
+  }
+
+  /* ---------- dictionary UI ---------- */
+  function renderDict() {
+    var list = $('dictList'); list.innerHTML = '';
+    NK.dict.entries.forEach(function (e, i) {
+      var row = document.createElement('div'); row.className = 'dictrow';
+      var a = document.createElement('input'); a.type = 'text'; a.value = e.from;
+      var b = document.createElement('input'); b.type = 'text'; b.value = e.to;
+      a.addEventListener('change', function () { e.from = a.value; persistSoon(); });
+      b.addEventListener('change', function () { e.to = b.value; persistSoon(); });
+      var del = document.createElement('button'); del.className = 'btn'; del.textContent = t('del');
+      del.addEventListener('click', function () { NK.dict.entries.splice(i, 1); renderDict(); persistSoon(); });
+      row.appendChild(a); row.appendChild(b); row.appendChild(del);
+      list.appendChild(row);
+    });
+  }
+
+  /* ---------- issues panel ---------- */
+  function showIssues(issues) {
+    var box = $('issues');
+    if (!issues || !issues.length) { box.innerHTML = '<span class="info">' + t('noIssues') + '</span>'; return; }
+    box.innerHTML = issues.map(function (it) {
+      return '<div class="' + it.level + '">[' + it.level + '] ' +
+        String(it.message).replace(/</g, '&lt;') + '</div>';
+    }).join('');
+  }
+
+  /* ---------- file open / save ---------- */
+  var fileHandles = {};
+  function download(name, text) {
+    var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 400);
+  }
+  function saveCues(cues, format) {
+    var text = NK.serialize[format](cues);
+    var name = 'subtitles.' + format;
+    /* Use the File System Access picker only in hosts with a working dialog.
+       Electron exposes showSaveFilePicker but (verified on Electron 34) the
+       returned promise never settles because no dialog backs it, which would
+       hang the save silently; there we use the download fallback directly.
+       WebView2 (Tauri) supports the picker and has no "Electron" UA token. */
+    var isElectron = /Electron\//.test(navigator.userAgent || '');
+    var canPicker = typeof window.showSaveFilePicker === 'function' && !isElectron;
+    if (canPicker) {
+      var opts = { suggestedName: name, types: [{ description: 'Subtitles', accept: { 'text/plain': ['.' + format] } }] };
+      window.showSaveFilePicker(opts).then(function (handle) {
+        fileHandles[format] = handle;
+        return handle.createWritable();
+      }).then(function (w) { return w.write(text).then(function () { return w.close(); }); })
+      .then(function () { flash(t('saved')); })
+      .catch(function (e) { if (e && e.name !== 'AbortError') download(name, text); });
+    } else {
+      download(name, text);
+    }
+  }
+  function flash(msg) { var s = $('asrStatus'); if (s) { s.textContent = msg; setTimeout(function () { if (s.textContent === msg) s.textContent = ''; }, 2500); } }
+
+  $('btnOpenSub').addEventListener('click', function () { $('fileSub').click(); });
+  $('fileSub').addEventListener('change', function () {
+    var f = this.files[0]; if (!f) return;
+    f.text().then(function (text) {
+      var v = NK.nkValidate(text);
+      var cues = v.cues.length ? v.cues : NK.parse.txt(text);
+      if ($('chkDictAuto').checked) cues = NK.dict.applyToCues(cues);
+      setCues(true, cues);
+      showIssues(v.issues);
+      if (v.format !== 'unknown') $('selFormat').value = v.format;
+    });
+    this.value = '';
+  });
+  $('btnOpenMedia').addEventListener('click', function () { $('fileMedia').click(); });
+  $('fileMedia').addEventListener('change', function () {
+    var f = this.files[0]; if (!f) return;
+    if (state.mediaURL) URL.revokeObjectURL(state.mediaURL);
+    state.mediaURL = URL.createObjectURL(f);
+    mediaEl.src = state.mediaURL;
+    NK.wave.loadFile(f);
+    this.value = '';
+  });
+  $('btnSave').addEventListener('click', function () { saveCues(state.cues, $('selFormat').value); });
+  $('btnSave2').addEventListener('click', function () { saveCues(state.cues2, $('selFormat').value); });
+  $('btnValidate').addEventListener('click', function () {
+    showIssues(NK.validateCues(state.cues));
+  });
+  $('btnAddCue').addEventListener('click', function () {
+    var last = state.cues[state.cues.length - 1];
+    var s = last ? last.end : 0;
+    var c = state.cues.slice(); c.push({ start: s, end: s + 2000, text: '' });
+    setCues(true, c);
+  });
+  $('btnShift').addEventListener('click', function () {
+    var sec = parseFloat($('shiftSec').value);
+    if (isNaN(sec)) return;
+    setCues(true, NK.cues.shift(state.cues, Math.round(sec * 1000)));
+  });
+  $('btnDictApply').addEventListener('click', function () {
+    setCues(true, NK.dict.applyToCues(state.cues));
+  });
+  $('btnDictAdd').addEventListener('click', function () {
+    var from = $('dictFrom').value.trim(), to = $('dictTo').value;
+    if (!from) return;
+    NK.dict.entries.push({ from: from, to: to });
+    $('dictFrom').value = ''; $('dictTo').value = '';
+    renderDict(); persistSoon();
+  });
+  $('btnCopyTiming').addEventListener('click', function () {
+    var c2 = state.cues.map(function (c, i) {
+      return { start: c.start, end: c.end, text: (state.cues2[i] && state.cues2[i].text) || '' };
+    });
+    setCues(false, c2);
+  });
+  $('btnLang').addEventListener('click', function () {
+    lang = lang === 'ja' ? 'en' : 'ja';
+    applyI18n(); renderAll(); persistSoon();
+  });
+
+  /* ---------- media sync: highlight current cue ---------- */
+  var mediaEl = $('media');
+  mediaEl.addEventListener('timeupdate', function () {
+    var now = mediaEl.currentTime * 1000;
+    var idx = -1;
+    for (var i = 0; i < state.cues.length; i++) {
+      if (now >= state.cues[i].start && now < state.cues[i].end) { idx = i; break; }
+    }
+    if (idx !== state.current) {
+      state.current = idx;
+      var rows = $('cueBody').children;
+      for (var j = 0; j < rows.length; j++) rows[j].className = (j === idx) ? 'current' : '';
+    }
+    NK.wave.setPlayhead(mediaEl.currentTime);
+  });
+
+  /* ---------- speech recognition (Phase A) ---------- */
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+  var recog = null, recogOn = false, recogBase = 0, recogStartPerf = 0, lastFinalAt = 0;
+  if (!SR) { $('asrUnsupported').classList.remove('hidden'); $('btnAsr').disabled = true; }
+  function mediaNowMs() {
+    if (mediaEl && mediaEl.duration) return mediaEl.currentTime * 1000;
+    return recogBase + (performance.now() - recogStartPerf);
+  }
+  $('btnAsr').addEventListener('click', function () {
+    if (!SR) return;
+    if (recogOn) { recog.stop(); return; }
+    recog = new SR();
+    recog.lang = $('selAsrLang').value;
+    recog.continuous = true;
+    recog.interimResults = true;
+    recogBase = (mediaEl && mediaEl.duration) ? mediaEl.currentTime * 1000 : 0;
+    recogStartPerf = performance.now();
+    lastFinalAt = recogBase;
+    recog.onresult = function (ev) {
+      for (var i = ev.resultIndex; i < ev.results.length; i++) {
+        var r = ev.results[i];
+        if (r.isFinal) {
+          var text = r[0].transcript.trim();
+          if (!text) continue;
+          if ($('chkDictAuto').checked) text = NK.dict.apply(text);
+          var end = mediaNowMs();
+          var start = Math.max(lastFinalAt, end - Math.max(800, text.length * 180));
+          var c = state.cues.slice();
+          c.push({ start: Math.round(start), end: Math.round(end), text: text });
+          c.sort(function (a, b) { return a.start - b.start; });
+          lastFinalAt = end;
+          setCues(true, c);
+          $('asrInterim').textContent = '';
+        } else {
+          $('asrInterim').textContent = r[0].transcript;
+        }
+      }
+    };
+    recog.onend = function () {
+      recogOn = false;
+      $('btnAsr').classList.remove('on');
+      $('btnAsr').querySelector('span').textContent = t('asrStart');
+      $('asrStatus').textContent = '';
+    };
+    recog.onerror = function (ev) { $('asrStatus').textContent = 'ASR: ' + ev.error; };
+    recog.start();
+    recogOn = true;
+    $('btnAsr').classList.add('on');
+    $('btnAsr').querySelector('span').textContent = t('asrStop');
+    $('asrStatus').textContent = t('listening');
+  });
+
+  /* ---------- init ---------- */
+  $('verLabel').textContent = 'v' + NK.version;
+  restore();
+  applyI18n();
+  renderAll();
+})();
+</script>
+
+<script>
+'use strict';
+/* ==== Waveform view (Phase E) — isolated module, Web Audio + canvas only.
+        Exposed as NK.wave and aliased to NK.waveSurfer so the same API
+        works in the browser and inside the Tauri shell. ==== */
+(function () {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  var wave = {
+    peaks: null, duration: 0, cues: [], playhead: 0, _ctx: null,
+    loadFile: function (file) {
+      var self = this;
+      file.arrayBuffer().then(function (buf) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        if (!self._ctx) self._ctx = new AC();
+        return self._ctx.decodeAudioData(buf.slice(0));
+      }).then(function (audioBuf) {
+        if (!audioBuf) return;
+        self.duration = audioBuf.duration;
+        var ch = audioBuf.getChannelData(0);
+        var buckets = 1200, peaks = new Float32Array(buckets);
+        var per = Math.max(1, Math.floor(ch.length / buckets));
+        for (var i = 0; i < buckets; i++) {
+          var max = 0, off = i * per;
+          for (var j = 0; j < per; j += 16) {
+            var v = Math.abs(ch[off + j] || 0);
+            if (v > max) max = v;
+          }
+          peaks[i] = max;
+        }
+        self.peaks = peaks;
+        self.draw();
+      }).catch(function () { /* audio decode is best-effort */ });
+    },
+    setCues: function (cues) { this.cues = cues || []; this.draw(); },
+    setPlayhead: function (sec) { this.playhead = sec || 0; this.draw(); },
+    draw: function () {
+      var canvas = document.getElementById('waveCanvas');
+      if (!canvas || !canvas.getContext) return;
+      var ctx = canvas.getContext('2d');
+      var W = canvas.width, H = canvas.height;
+      ctx.fillStyle = '#1c1917'; ctx.fillRect(0, 0, W, H);
+      var dur = this.duration || 0;
+      /* cue regions */
+      if (dur > 0) {
+        ctx.fillStyle = 'rgba(179,84,30,0.35)';
+        for (var i = 0; i < this.cues.length; i++) {
+          var x1 = (this.cues[i].start / 1000 / dur) * W;
+          var x2 = (this.cues[i].end / 1000 / dur) * W;
+          ctx.fillRect(x1, 0, Math.max(1, x2 - x1), H);
+        }
+      }
+      /* peaks */
+      if (this.peaks) {
+        ctx.fillStyle = '#a8a29e';
+        var mid = H / 2, n = this.peaks.length;
+        for (var x = 0; x < W; x++) {
+          var p = this.peaks[Math.floor(x / W * n)] || 0;
+          var h = Math.max(1, p * (H - 8));
+          ctx.fillRect(x, mid - h / 2, 1, h);
+        }
+      } else {
+        ctx.fillStyle = '#78716c';
+        ctx.font = '12px sans-serif';
+        ctx.fillText('waveform: open a media file', 10, H / 2);
+      }
+      /* playhead */
+      if (dur > 0) {
+        ctx.fillStyle = '#facc15';
+        var px = (this.playhead / dur) * W;
+        ctx.fillRect(px, 0, 2, H);
+      }
+    }
+  };
+  NK.wave = wave;
+  NK.waveSurfer = wave; /* same isolated API surface as the design's NK.waveSurfer */
+  var canvas = document.getElementById('waveCanvas');
+  if (canvas) {
+    canvas.addEventListener('click', function (ev) {
+      var media = document.getElementById('media');
+      if (!media || !wave.duration) return;
+      var rect = canvas.getBoundingClientRect();
+      var ratio = (ev.clientX - rect.left) / rect.width;
+      try { media.currentTime = ratio * wave.duration; } catch (e) { }
+    });
+  }
+})();
+</script>
+</body>
+</html>

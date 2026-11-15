@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Core logic tests + fuzz
+        run: node tests/run-tests.js
+      - name: Verify single-file principles
+        run: |
+          # The app must not reference any external resource.
+          if grep -Eo 'src="http|href="http|url\(http|@import' nukamiso.html; then
+            echo 'External resource reference found in nukamiso.html' >&2
+            exit 1
+          fi
+          grep -q "connect-src 'none'" nukamiso.html

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    },
+    "windows": [
+      {
+        "height": 800,
+        "title": "Nukamiso",
+        "width": 1200
+      }
+    ]
+  },
+  "build": {
+    "frontendDist": "../nukamiso.html"
+  },
+  "bundle": {
+    "active": true,
+    "category": "Utility",
+    "icon": [
+      "icons/icon.png"
+    ],
+    "longDescription": "Nukamiso is a zero-dependency, local-first subtitle editor. Dictate subtitles with your voice, edit them, and export SRT/VTT/ASS/TXT. Your data never leaves the device.",
+    "shortDescription": "Single-file, local-first subtitle editor",
+    "targets": "all"
+  },
+  "identifier": "com.nukamiso.app",
+  "productName": "Nukamiso",
+  "version": "2.0.0"
+}

@@ -1,0 +1,19 @@
+[package]
+name = "nukamiso"
+version = "2.0.0"
+description = "Nukamiso — single-file, zero-dependency, local-first subtitle editor"
+edition = "2021"
+
+[lib]
+name = "nukamiso_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[profile.release]
+opt-level = "s"
+lto = true

@@ -1,0 +1,60 @@
+name: Release
+
+# Tag-driven release pipeline (Phase G-5).
+# Builds the Tauri shell for each desktop OS and attaches the bundles to a
+# draft GitHub release.
+#
+# NOTE: Binaries are UNSIGNED. Code signing (Apple Developer Program,
+# Azure Trusted Signing) costs money and is intentionally out of scope;
+# see README.md "署名について".
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Run core tests
+        run: node tests/run-tests.js
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: src-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Nukamiso ${{ github.ref_name }}'
+          releaseBody: 'Unsigned builds — see README.md for details.'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
