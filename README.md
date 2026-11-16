@@ -13,9 +13,9 @@ Just open `nukamiso.html` in a browser. No install, no server, no account.
 非交渉原則 — これらを破る変更は受け入れません。
 
 - **Single-file** — 本体は `nukamiso.html` ひとつだけ
-- **Zero-dependency** — 外部ライブラリ・CDN・Web フォントを一切読み込まない
+- **Zero-dependency** — 外部ライブラリ・CDN・Web フォントを一切読み込まない（唯一の例外は Phase H の文字起こしエンジンで、利用者の明示操作でのみ取得する。既定では読み込まれない）
 - **Local-first** — データは端末内（localStorage）だけに保存される
-- **Zero-telemetry** — 通信は一切しない（CSP で `connect-src 'none'` を強制）
+- **Zero-telemetry** — テレメトリ送信は一切しない。通信先は CSP で Phase H の取得先（jsDelivr / Hugging Face）だけに限定され、それも利用者がダウンロードボタンを押したときだけ使う。音声・字幕データは端末の外に出ない
 
 ## 機能 (Features)
 
@@ -28,6 +28,7 @@ Just open `nukamiso.html` in a browser. No install, no server, no account.
 | E | 波形ビュー: Web Audio API + canvas の自前実装（`NK.wave` に隔離、WaveSurfer.js 等の外部依存なし） |
 | F | テスト: Node 単体テスト + ランダム往復 fuzz + Electron 実 UI テスト |
 | G | 配布: Tauri 2.x の殻（`src-tauri/`）とタグ駆動のリリース workflow |
+| H | ファイル文字起こし: 既存の音声/動画ファイルから**端末内で**文字起こしし、時刻付き字幕行にする（Whisper を WASM で実行）。30秒ずつ処理し進捗表示と中断が可能。エンジン（Transformers.js、版固定）とモデルは利用者の明示操作でのみダウンロードし、取得元とサイズを事前に表示する。音声データは送信されない |
 
 その他: 字幕の検証（`nkValidate` — 時刻逆行・重なり・長すぎる行などを指摘）、
 キューの追加・削除・分割・結合・全体シフト、動画/音声ファイルの再生と現在行ハイライト、
@@ -40,6 +41,13 @@ File System Access API による保存（非対応環境ではダウンロード
 2. 「動画/音声を開く」でメディアを読み込む（任意）
 3. 🎙「音声入力開始」で話すか、「字幕を開く」で既存字幕を読み込むか、表で直接編集する
 4. 形式を選んで「保存」
+
+既存ファイルから字幕を作るには: メディアを開いたあと、「ファイルから文字起こし」で
+モデルを選び、「エンジンをダウンロード」（初回のみ。エンジン約23MB＋モデル約42MB
+または約80MB、取得元は jsDelivr と Hugging Face）を押してから「文字起こし開始」。
+認識は端末内で行われ、結果はそのまま編集・書き出しできます。
+長いファイルは30秒ずつ処理され、途中経過の表示と中断ができます。
+ブラウザが再生できない形式のファイルはデコードできず、その旨が表示されます。
 
 ## テスト (Tests)
 

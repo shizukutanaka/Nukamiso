@@ -24,9 +24,9 @@ function cueEq(a, b) {
 }
 
 /* ---- namespace / philosophy flags ---- */
-eq(NK.version, '2.0.0', 'NK.version');
+eq(NK.version, '2.1.0', 'NK.version');
 ok(NK.config.zeroDep && NK.config.singleFile && NK.config.localFirst && NK.config.zeroTelemetry, 'NK.config flags');
-ok(NK.features.phaseA && NK.features.phaseB && NK.features.phaseC && NK.features.phaseD && NK.features.phaseE, 'NK.features phases');
+ok(NK.features.phaseA && NK.features.phaseB && NK.features.phaseC && NK.features.phaseD && NK.features.phaseE && NK.features.phaseH, 'NK.features phases');
 
 /* ---- time ---- */
 eq(NK.time.parse('00:00:01,000'), 1000, 'parse srt time');
@@ -172,6 +172,57 @@ for (let iter = 0; iter < 2000; iter++) {
   } catch (e) { garbageFail++; console.error('FUZZ garbage threw', iter, e.message); }
 }
 ok(garbageFail === 0, 'fuzz garbage inputs (2000 iters) never throw');
+
+/* ---- file transcription planning/conversion (Phase H) ---- */
+const TX = NK.transcribe;
+ok(!!TX, 'NK.transcribe exists');
+ok(/^https:\/\/cdn\.jsdelivr\.net\//.test(TX.ENGINE_URL) && TX.ENGINE_URL.includes('@3.7.2'), 'engine URL is pinned (Transformers.js 3.7.2 on jsDelivr)');
+eq(TX.MODELS.length, 2, 'two models offered');
+ok(TX.MODELS.every(m => /^Xenova\/whisper-/.test(m.id) && m.sizeMB > 0 && m.labelJa && m.labelEn), 'model metadata complete');
+ok(TX.ENGINE_SIZE_MB > 0 && TX.SAMPLE_RATE === 16000 && TX.CHUNK_MS === 30000, 'transcribe constants');
+
+/* chunk planning */
+eq(TX.planChunks(0), [], 'planChunks zero duration');
+eq(TX.planChunks(-5000), [], 'planChunks negative duration');
+eq(TX.planChunks(NaN), [], 'planChunks NaN duration');
+eq(TX.planChunks(11000), [{ startMs: 0, endMs: 11000 }], 'planChunks short file = one chunk');
+eq(TX.planChunks(61000), [
+  { startMs: 0, endMs: 30000 }, { startMs: 30000, endMs: 60000 }, { startMs: 60000, endMs: 61000 }
+], 'planChunks 61s = 30+30+1');
+eq(TX.planChunks(60000), [
+  { startMs: 0, endMs: 30000 }, { startMs: 30000, endMs: 60000 }
+], 'planChunks exact multiple has no empty tail');
+eq(TX.planChunks(25000, 10000), [
+  { startMs: 0, endMs: 10000 }, { startMs: 10000, endMs: 20000 }, { startMs: 20000, endMs: 25000 }
+], 'planChunks custom chunk size');
+
+/* whisper chunks -> cues */
+eq(TX.chunksToCues([{ timestamp: [0, 2.5], text: ' Hello ' }, { timestamp: [2.5, 4], text: 'world' }], 0, 30000),
+   [{ start: 0, end: 2500, text: 'Hello' }, { start: 2500, end: 4000, text: 'world' }],
+   'chunksToCues basic conversion + trim');
+eq(TX.chunksToCues([{ timestamp: [1, 2], text: 'x' }], 30000, 60000),
+   [{ start: 31000, end: 32000, text: 'x' }], 'chunksToCues applies window offset');
+eq(TX.chunksToCues([{ timestamp: [28, null], text: 'tail' }], 0, 30000),
+   [{ start: 28000, end: 30000, text: 'tail' }], 'chunksToCues null end uses window end');
+eq(TX.chunksToCues([{ timestamp: [28, null], text: 'tail' }], 0),
+   [{ start: 28000, end: 30000, text: 'tail' }], 'chunksToCues null end without window defaults to +2s');
+eq(TX.chunksToCues([{ timestamp: [0, 1], text: '   ' }, { timestamp: [1, 2], text: '' }], 0, 30000),
+   [], 'chunksToCues drops empty segments');
+eq(TX.chunksToCues([{ timestamp: [5, 5], text: 'zero' }], 0, 30000),
+   [{ start: 5000, end: 5500, text: 'zero' }], 'chunksToCues enforces minimum cue length');
+eq(TX.chunksToCues([{ timestamp: [29, 45], text: 'over' }], 0, 30000),
+   [{ start: 29000, end: 30000, text: 'over' }], 'chunksToCues clamps end to window');
+eq(TX.chunksToCues([{ timestamp: [3, 4], text: 'b' }, { timestamp: [1, 2], text: 'a' }], 0, 30000).map(c => c.text),
+   ['a', 'b'], 'chunksToCues sorts by start');
+eq(TX.chunksToCues(null, 0, 30000), [], 'chunksToCues null input');
+eq(TX.chunksToCues(undefined), [], 'chunksToCues undefined input');
+eq(TX.chunksToCues([{ text: 'no ts' }, { timestamp: ['x', 'y'], text: 'bad' }, null, 42], 0, 30000),
+   [], 'chunksToCues skips malformed segments without throwing');
+
+/* language mapping */
+eq(TX.languageName('ja-JP'), 'japanese', 'languageName ja');
+eq(TX.languageName('en-US'), 'english', 'languageName en');
+eq(TX.languageName('fr-FR'), undefined, 'languageName unknown -> auto-detect');
 
 console.log('tests: ' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

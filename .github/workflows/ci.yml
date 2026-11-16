@@ -17,9 +17,21 @@ jobs:
         run: node tests/run-tests.js
       - name: Verify single-file principles
         run: |
-          # The app must not reference any external resource.
+          # The app must not statically reference any external resource.
           if grep -Eo 'src="http|href="http|url\(http|@import' nukamiso.html; then
             echo 'External resource reference found in nukamiso.html' >&2
             exit 1
           fi
-          grep -q "connect-src 'none'" nukamiso.html
+          # Phase H exception, kept as narrow as possible: the ONLY network
+          # origins the page may ever contact are the pinned ones used for
+          # the user-initiated transcription engine/model download. The CSP
+          # connect-src allowlist must match exactly, and no other https
+          # host may appear anywhere in the file.
+          grep -q "connect-src https://cdn.jsdelivr.net https://huggingface.co https://cdn-lfs.huggingface.co https://\*\.hf\.co;" nukamiso.html
+          hosts=$(grep -oE 'https://[a-zA-Z0-9.-]+' nukamiso.html | sort -u)
+          expected=$(printf 'https://cdn-lfs.huggingface.co\nhttps://cdn.jsdelivr.net\nhttps://huggingface.co')
+          if [ "$hosts" != "$expected" ]; then
+            echo "Unexpected https hosts in nukamiso.html:" >&2
+            echo "$hosts" >&2
+            exit 1
+          fi

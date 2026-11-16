@@ -32,9 +32,18 @@ app.whenReady().then(async () => {
   const run = (code) => win.webContents.executeJavaScript(code, true);
 
   try {
-    check('NK namespace exists', await run('typeof NK === "object" && NK.version === "2.0.0"'));
+    check('NK namespace exists', await run('typeof NK === "object" && NK.version === "2.1.0"'));
     check('wave module isolated', await run('!!(NK.wave && NK.waveSurfer === NK.wave)'));
     check('ASR unsupported notice handled', await run('!!document.getElementById("asrUnsupported")'));
+
+    /* --- file transcription panel (Phase H): present, honest, inert by
+           default. The real engine download is NOT exercised here (network);
+           it is verified separately end-to-end. --- */
+    check('transcribe panel exists', await run('!!(document.getElementById("btnTxLoad") && document.getElementById("btnTxStart") && document.getElementById("selTxModel"))'));
+    check('transcribe info shows sources and sizes', await run('(function(){var s=document.getElementById("txInfo").textContent; return s.indexOf("cdn.jsdelivr.net")>=0 && s.indexOf("huggingface.co")>=0 && s.indexOf("MB")>=0;})()'));
+    check('transcribe start disabled before engine+media', await run('document.getElementById("btnTxStart").disabled === true'));
+    check('transcribe core present', await run('!!(NK.transcribe && NK.transcribe.planChunks(61000).length === 3 && NK.transcribe.chunksToCues([{timestamp:[0,1.5],text:" hi "}],0,30000)[0].text === "hi")'));
+    check('no network before explicit download', await run('NK.transcribe.ENGINE_URL.indexOf("https://cdn.jsdelivr.net/") === 0 && typeof Worker === "function"'));
 
     /* --- open: feed a subtitle file through the real file input --- */
     const srt = '1\\n00:00:01,000 --> 00:00:02,500\\nぬかみそテスト\\n\\n2\\n00:00:03,000 --> 00:00:04,500\\n二行目です\\n';

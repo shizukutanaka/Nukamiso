@@ -3,7 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<!-- CSP: by default this page talks to no one. The ONLY exceptions are the
+     two pinned origins used when (and only when) the user explicitly downloads
+     the optional on-device transcription engine/model (Phase H):
+     cdn.jsdelivr.net (engine code) and huggingface.co + *.hf.co (model files).
+     Audio and subtitle data are never transmitted; inference runs locally. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src blob: https://cdn.jsdelivr.net; connect-src https://cdn.jsdelivr.net https://huggingface.co https://cdn-lfs.huggingface.co https://*.hf.co; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Nukamiso — Subtitle Editor</title>
 <style>
 :root{
@@ -109,6 +114,18 @@ label.chk{font-size:12px;color:var(--sub);display:inline-flex;gap:4px;align-item
       </div>
       <div id="asrInterim"></div>
       <div id="asrUnsupported" class="hidden" style="color:var(--warn);font-size:12px" data-i18n="asrUnsupported">このブラウザは音声認識に対応していません。手入力で全機能が使えます。</div>
+      <div style="border-top:1px solid var(--line);margin-top:10px;padding-top:10px">
+        <div style="font-weight:bold;margin-bottom:4px">📄 <span data-i18n="txTitle">ファイルから文字起こし（端末内）</span></div>
+        <div id="txInfo" style="font-size:12px;color:var(--sub)"></div>
+        <div class="toolbar" style="margin-top:6px">
+          <select class="btn" id="selTxModel"></select>
+          <button class="btn" id="btnTxLoad" data-i18n="txLoad">エンジンをダウンロード</button>
+          <button class="btn primary" id="btnTxStart" disabled data-i18n="txStart">文字起こし開始</button>
+          <button class="btn" id="btnTxCancel" disabled data-i18n="txCancel">中断</button>
+        </div>
+        <progress id="txProgress" value="0" max="100" style="width:100%" class="hidden"></progress>
+        <div id="txStatus" style="font-size:12px;color:var(--sub)"></div>
+      </div>
     </div>
     <div class="panel">
       <h2><span data-i18n="track2">翻訳トラック（第2言語）</span><span class="tag">Phase C</span></h2>
@@ -133,9 +150,14 @@ label.chk{font-size:12px;color:var(--sub);display:inline-flex;gap:4px;align-item
 var NK = (typeof window !== 'undefined' && window.NK) ? window.NK : {};
 if (typeof window !== 'undefined') window.NK = NK;
 
-NK.version = '2.0.0';
+NK.version = '2.1.0';
+/* These flags describe the shipped file itself: it bundles no dependencies,
+   sends no telemetry, and by default makes no network requests at all.
+   Phase H is the single opt-in exception: the transcription engine/model are
+   fetched ONLY when the user explicitly clicks the download button, and even
+   then audio/subtitle data never leaves the device (inference is local). */
 NK.config = { zeroDep: true, singleFile: true, localFirst: true, zeroTelemetry: true };
-NK.features = { phaseA: true, phaseB: true, phaseC: true, phaseD: true, phaseE: true, phaseF: true, phaseG: true };
+NK.features = { phaseA: true, phaseB: true, phaseC: true, phaseD: true, phaseE: true, phaseF: true, phaseG: true, phaseH: true };
 
 /* ---------- time utilities (all times are milliseconds) ---------- */
 NK.time = {
@@ -468,6 +490,82 @@ NK.cues = {
     return out;
   }
 };
+
+/* ---------- on-device file transcription (Phase H) ----------
+   Pure planning/conversion logic lives here so Node tests can pin it down.
+   The browser-only parts (engine download, audio decode, worker) are in the
+   UI section. The engine is Transformers.js (pinned) running OpenAI Whisper
+   ONNX models (quantized, q8) fully on-device via WASM. Nothing is fetched
+   until the user explicitly asks, and audio is never transmitted. */
+NK.transcribe = {
+  /* Pinned engine build (Transformers.js 3.7.2, jsDelivr bundled ESM). */
+  ENGINE_URL: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2/+esm',
+  ENGINE_SOURCE: 'cdn.jsdelivr.net',
+  /* Approximate download size of the engine itself (JS bundle + the
+     onnxruntime WASM binary), shown to the user before downloading. */
+  ENGINE_SIZE_MB: 23,
+  MODEL_SOURCE: 'huggingface.co',
+  /* Whisper models (ONNX q8) hosted on Hugging Face Hub. License: Apache-2.0
+     (per the model repositories' metadata). Sizes are the measured totals of
+     the files the engine actually downloads (encoder + merged decoder +
+     tokenizer/config), rounded up. */
+  MODELS: [
+    { id: 'Xenova/whisper-tiny', sizeMB: 42, labelJa: 'Whisper Tiny（高速・軽量）', labelEn: 'Whisper Tiny (fast, small)' },
+    { id: 'Xenova/whisper-base', sizeMB: 80, labelJa: 'Whisper Base（高精度・日本語向き）', labelEn: 'Whisper Base (accurate, better for Japanese)' }
+  ],
+  SAMPLE_RATE: 16000,
+  CHUNK_MS: 30000, /* Whisper's context window is 30 seconds. */
+  /* Split [0, durationMs] into consecutive windows of at most chunkMs.
+     Returns [] for non-positive/invalid durations. Never throws. */
+  planChunks: function (durationMs, chunkMs) {
+    var out = [];
+    var total = Math.floor(Number(durationMs));
+    var step = Math.floor(Number(chunkMs)) || NK.transcribe.CHUNK_MS;
+    if (!(total > 0) || !(step > 0)) return out;
+    for (var s = 0; s < total; s += step) {
+      out.push({ startMs: s, endMs: Math.min(total, s + step) });
+    }
+    return out;
+  },
+  /* Convert Whisper segment chunks ([{timestamp:[startSec,endSec], text}])
+     for one audio window into subtitle cues (ms), offset by the window's
+     start. endSec may be null (open-ended final segment): the window end is
+     used when known. Empty segments are dropped, times are clamped into the
+     window, and every cue is at least 500ms long. Never throws. */
+  chunksToCues: function (chunks, offsetMs, windowEndMs) {
+    var cues = [];
+    if (!Array.isArray(chunks)) return cues;
+    var off = Math.max(0, Math.floor(Number(offsetMs) || 0));
+    var wEnd = (typeof windowEndMs === 'number' && windowEndMs > off) ? Math.floor(windowEndMs) : null;
+    for (var i = 0; i < chunks.length; i++) {
+      var ch = chunks[i];
+      if (!ch || !Array.isArray(ch.timestamp)) continue;
+      var text = String(ch.text == null ? '' : ch.text).trim();
+      if (!text) continue;
+      var sSec = Number(ch.timestamp[0]);
+      if (!isFinite(sSec)) continue;
+      var start = off + Math.round(sSec * 1000);
+      var eRaw = ch.timestamp[1];
+      var end;
+      if (eRaw !== null && eRaw !== undefined && isFinite(Number(eRaw))) end = off + Math.round(Number(eRaw) * 1000);
+      else if (wEnd !== null) end = wEnd;
+      else end = start + 2000;
+      if (start < off) start = off;
+      if (wEnd !== null && end > wEnd) end = wEnd;
+      if (end <= start) end = start + 500;
+      cues.push({ start: start, end: end, text: text });
+    }
+    cues.sort(function (a, b) { return (a.start - b.start) || (a.end - b.end); });
+    return cues;
+  },
+  /* Map the UI language select values to Whisper language names.
+     Returns undefined for anything else (Whisper then auto-detects). */
+  languageName: function (uiLang) {
+    if (uiLang === 'ja-JP') return 'japanese';
+    if (uiLang === 'en-US') return 'english';
+    return undefined;
+  }
+};
 /* ==== NK CORE END ==== */
 </script>
 
@@ -485,7 +583,21 @@ NK.cues = {
       asrUnsupported: 'このブラウザは音声認識に対応していません。手入力で全機能が使えます。',
       track2: '翻訳トラック（第2言語）', copyTiming: 'タイミングを複写', saveTrack2: '第2トラックを保存',
       footerNote: 'データはこの端末の外に出ません。', listening: '聞き取り中…', split: '分割', merge: '結合', del: '削除',
-      noIssues: '問題は見つかりませんでした。', saved: '保存しました' },
+      noIssues: '問題は見つかりませんでした。', saved: '保存しました',
+      txTitle: 'ファイルから文字起こし（端末内）', txLoad: 'エンジンをダウンロード', txLoaded: 'エンジン読込済み',
+      txStart: '文字起こし開始', txCancel: '中断',
+      txInfo: 'エンジン（{engineSrc}、約{engineMB}MB）とモデル（{modelSrc}、約{modelMB}MB）は、このボタンを押したときだけダウンロードされます。音声・字幕データは端末の外に送信されません（認識は端末内で実行）。モデルはブラウザに保存され、次回は再ダウンロード不要です。',
+      txNeedMedia: '先に「動画/音声を開く」でファイルを選んでください。',
+      txLoading: 'エンジンとモデルをダウンロード中… {pct}%',
+      txReady: '準備完了。「文字起こし開始」を押してください。',
+      txLoadFailed: 'エンジンの取得に失敗しました: {msg}',
+      txLoadCancelled: 'ダウンロードを中断しました。',
+      txDecoding: '音声をデコード中…',
+      txDecodeFailed: 'このファイルはブラウザでデコードできませんでした。ブラウザが再生できる形式（MP3 / WAV / MP4 / WebM など）のファイルをお試しください。大きな動画は、音声だけのファイルにすると成功しやすくなります。',
+      txRunning: '文字起こし中… {done}/{total}（{pct}%）',
+      txDone: '文字起こし完了: {n} 行の字幕を追加しました。',
+      txCancelled: '中断しました（{n} 行の字幕を追加しました）。',
+      txFailed: '文字起こしに失敗しました: {msg}' },
     en: { openSub: 'Open subtitles', openMedia: 'Open video/audio', saveAs: 'Format', save: 'Save', validate: 'Validate',
       cues: 'Subtitle cues', addCue: '+ Add', shiftAll: 'Shift all', dictAuto: 'Auto-apply dictionary', dictApply: 'Apply dictionary to all cues',
       colStart: 'Start', colEnd: 'End', colText: 'Text', dictTitle: 'User dictionary', dictFrom: 'Mis-recognized (e.g. nukamiso)',
@@ -493,7 +605,21 @@ NK.cues = {
       asrUnsupported: 'This browser does not support speech recognition. All features remain available via manual input.',
       track2: 'Translation track (2nd language)', copyTiming: 'Copy timing', saveTrack2: 'Save track 2',
       footerNote: 'Your data never leaves this device.', listening: 'Listening…', split: 'Split', merge: 'Merge', del: 'Delete',
-      noIssues: 'No issues found.', saved: 'Saved' }
+      noIssues: 'No issues found.', saved: 'Saved',
+      txTitle: 'Transcribe a file (on-device)', txLoad: 'Download engine', txLoaded: 'Engine ready',
+      txStart: 'Start transcription', txCancel: 'Cancel',
+      txInfo: 'The engine ({engineSrc}, ~{engineMB} MB) and model ({modelSrc}, ~{modelMB} MB) are downloaded only when you press this button. Audio and subtitle data are never sent anywhere (recognition runs on this device). The model is cached by the browser, so it is not downloaded again next time.',
+      txNeedMedia: 'First choose a file with "Open video/audio".',
+      txLoading: 'Downloading engine and model… {pct}%',
+      txReady: 'Ready. Press "Start transcription".',
+      txLoadFailed: 'Failed to download the engine: {msg}',
+      txLoadCancelled: 'Download cancelled.',
+      txDecoding: 'Decoding audio…',
+      txDecodeFailed: 'This file could not be decoded by the browser. Please try a file in a format the browser can play (MP3 / WAV / MP4 / WebM, etc.). For large videos, an audio-only file works better.',
+      txRunning: 'Transcribing… {done}/{total} ({pct}%)',
+      txDone: 'Done: added {n} subtitle cues.',
+      txCancelled: 'Cancelled (added {n} subtitle cues).',
+      txFailed: 'Transcription failed: {msg}' }
   };
   var lang = 'ja';
   function t(k) { return (I18N[lang] && I18N[lang][k]) || I18N.ja[k] || k; }
@@ -504,7 +630,7 @@ NK.cues = {
     document.documentElement.lang = lang === 'ja' ? 'ja' : 'en';
   }
 
-  var state = { cues: [], cues2: [], current: -1, mediaURL: null };
+  var state = { cues: [], cues2: [], current: -1, mediaURL: null, mediaFile: null };
   var $ = function (id) { return document.getElementById(id); };
 
   /* ---------- persistence (localStorage only; nothing leaves the device) ---------- */
@@ -659,8 +785,10 @@ NK.cues = {
     var f = this.files[0]; if (!f) return;
     if (state.mediaURL) URL.revokeObjectURL(state.mediaURL);
     state.mediaURL = URL.createObjectURL(f);
+    state.mediaFile = f;
     mediaEl.src = state.mediaURL;
     NK.wave.loadFile(f);
+    txUpdateButtons();
     this.value = '';
   });
   $('btnSave').addEventListener('click', function () { saveCues(state.cues, $('selFormat').value); });
@@ -697,7 +825,7 @@ NK.cues = {
   });
   $('btnLang').addEventListener('click', function () {
     lang = lang === 'ja' ? 'en' : 'ja';
-    applyI18n(); renderAll(); persistSoon();
+    applyI18n(); renderAll(); renderTxModels(); txUpdateButtons(); persistSoon();
   });
 
   /* ---------- media sync: highlight current cue ---------- */
@@ -768,10 +896,241 @@ NK.cues = {
     $('asrStatus').textContent = t('listening');
   });
 
+  /* ---------- on-device file transcription (Phase H) ----------
+     The engine (Transformers.js + Whisper ONNX) runs in a module Worker
+     created from a Blob, so this file stays a single file. The engine and
+     model are fetched ONLY on the explicit download click below; the audio
+     itself is decoded and recognized entirely on this device. */
+  var tx = { worker: null, ready: false, readyModel: null, busy: false, loading: false,
+             cancel: false, seq: 0, pending: {}, progressByFile: {} };
+  function tf(k, params) {
+    var s = t(k);
+    for (var name in params) s = s.split('{' + name + '}').join(String(params[name]));
+    return s;
+  }
+  function txSetStatus(msg) { $('txStatus').textContent = msg || ''; }
+  function currentTxModel() { return NK.transcribe.MODELS[Number($('selTxModel').value) || 0]; }
+  function renderTxInfo() {
+    var m = currentTxModel();
+    $('txInfo').textContent = tf('txInfo', {
+      engineSrc: NK.transcribe.ENGINE_SOURCE, engineMB: NK.transcribe.ENGINE_SIZE_MB,
+      modelSrc: NK.transcribe.MODEL_SOURCE, modelMB: m.sizeMB
+    });
+  }
+  function renderTxModels() {
+    var sel = $('selTxModel');
+    var prev = sel.value;
+    sel.innerHTML = '';
+    NK.transcribe.MODELS.forEach(function (m, i) {
+      var o = document.createElement('option');
+      o.value = String(i);
+      o.textContent = (lang === 'ja' ? m.labelJa : m.labelEn) + ' (~' + m.sizeMB + ' MB)';
+      sel.appendChild(o);
+    });
+    if (prev && Number(prev) < NK.transcribe.MODELS.length) sel.value = prev;
+    renderTxInfo();
+  }
+  function txUpdateButtons() {
+    var loaded = tx.ready && tx.readyModel === currentTxModel().id;
+    $('btnTxLoad').disabled = tx.busy || loaded;
+    $('btnTxLoad').textContent = loaded ? t('txLoaded') : t('txLoad');
+    $('btnTxStart').disabled = tx.busy || !loaded || !state.mediaFile;
+    $('btnTxCancel').disabled = !tx.busy;
+  }
+  /* The worker body must be fully self-contained: it is serialized with
+     toString() and cannot reference anything from this scope. */
+  function txWorkerMain() {
+    var asr = null;
+    self.onmessage = function (e) {
+      var msg = e.data || {};
+      function fail(id, err) {
+        self.postMessage({ type: 'error', id: id || null, message: String((err && err.message) || err) });
+      }
+      if (msg.type === 'load') {
+        import(msg.engineUrl).then(function (lib) {
+          lib.env.allowLocalModels = false;
+          return lib.pipeline('automatic-speech-recognition', msg.model, {
+            dtype: 'q8',
+            progress_callback: function (p) {
+              self.postMessage({ type: 'progress', file: p.file || '', loaded: p.loaded || 0, total: p.total || 0 });
+            }
+          });
+        }).then(function (p) {
+          asr = p;
+          self.postMessage({ type: 'loaded' });
+        }).catch(function (err) { fail(null, err); });
+      } else if (msg.type === 'transcribe') {
+        if (!asr) { fail(msg.id, new Error('engine not loaded')); return; }
+        asr(msg.audio, { language: msg.language || undefined, task: 'transcribe', return_timestamps: true })
+          .then(function (out) { self.postMessage({ type: 'result', id: msg.id, chunks: out.chunks || [] }); })
+          .catch(function (err) { fail(msg.id, err); });
+      }
+    };
+  }
+  function txFailLoad(err) {
+    if (tx.worker) { try { tx.worker.terminate(); } catch (e) { } tx.worker = null; }
+    tx.busy = false; tx.loading = false; tx.ready = false; tx.readyModel = null;
+    $('txProgress').classList.add('hidden');
+    txSetStatus(tf('txLoadFailed', { msg: String((err && err.message) || err) }));
+    txUpdateButtons();
+  }
+  function txEnsureWorker() {
+    if (tx.worker) return tx.worker;
+    var src = '(' + txWorkerMain.toString() + ')();';
+    var w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })), { type: 'module' });
+    w.onmessage = function (e) {
+      var msg = e.data || {};
+      if (msg.type === 'progress') {
+        tx.progressByFile[msg.file] = { loaded: msg.loaded, total: msg.total };
+        var ld = 0, tt = 0;
+        for (var f in tx.progressByFile) {
+          if (tx.progressByFile[f].total > 0) { ld += tx.progressByFile[f].loaded; tt += tx.progressByFile[f].total; }
+        }
+        var pct = tt > 0 ? Math.min(100, Math.round(ld / tt * 100)) : 0;
+        $('txProgress').value = pct;
+        if (tx.loading) txSetStatus(tf('txLoading', { pct: pct }));
+      } else if (msg.type === 'loaded') {
+        tx.busy = false; tx.loading = false; tx.ready = true;
+        tx.readyModel = tx.loadingModel;
+        $('txProgress').classList.add('hidden');
+        txSetStatus(t('txReady'));
+        txUpdateButtons();
+      } else if (msg.type === 'result') {
+        var p = tx.pending[msg.id];
+        if (p) { delete tx.pending[msg.id]; p.resolve(msg.chunks || []); }
+      } else if (msg.type === 'error') {
+        var q = msg.id && tx.pending[msg.id];
+        if (q) { delete tx.pending[msg.id]; q.reject(new Error(msg.message)); }
+        else if (tx.loading) txFailLoad(new Error(msg.message));
+      }
+    };
+    w.onerror = function (e) {
+      var err = new Error(e.message || 'worker error');
+      if (tx.loading) { txFailLoad(err); return; }
+      /* A crashed worker must not leave the UI busy forever: fail any
+         in-flight chunk and require a fresh engine load (the model itself
+         stays cached in the browser, so reloading is fast). */
+      for (var id in tx.pending) { tx.pending[id].reject(err); delete tx.pending[id]; }
+      if (tx.worker === w) tx.worker = null;
+      tx.ready = false; tx.readyModel = null;
+    };
+    tx.worker = w;
+    return w;
+  }
+  function txCallTranscribe(piece, language) {
+    return new Promise(function (resolve, reject) {
+      var id = ++tx.seq;
+      tx.pending[id] = { resolve: resolve, reject: reject };
+      tx.worker.postMessage({ type: 'transcribe', id: id, audio: piece, language: language });
+    });
+  }
+  /* Decode any browser-playable media file to 16kHz mono Float32Array.
+     Rejects when the browser cannot decode the format. */
+  function decodeMediaTo16k(file) {
+    return file.arrayBuffer().then(function (ab) {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) throw new Error('AudioContext unavailable');
+      var actx = new AC();
+      var ready = (actx.state === 'suspended' && actx.resume) ? actx.resume() : Promise.resolve();
+      return ready.then(function () { return actx.decodeAudioData(ab); }).then(function (buf) {
+        var len = Math.max(1, Math.ceil(buf.duration * NK.transcribe.SAMPLE_RATE));
+        var off = new OfflineAudioContext(1, len, NK.transcribe.SAMPLE_RATE);
+        var src = off.createBufferSource();
+        src.buffer = buf;
+        src.connect(off.destination);
+        src.start();
+        return off.startRendering().then(function (rendered) {
+          if (actx.close) actx.close();
+          return rendered.getChannelData(0);
+        });
+      });
+    });
+  }
+  $('selTxModel').addEventListener('change', function () { renderTxInfo(); txUpdateButtons(); });
+  $('btnTxLoad').addEventListener('click', function () {
+    if (tx.busy) return;
+    var model = currentTxModel();
+    tx.busy = true; tx.loading = true; tx.loadingModel = model.id; tx.progressByFile = {};
+    $('txProgress').classList.remove('hidden');
+    $('txProgress').value = 0;
+    txSetStatus(tf('txLoading', { pct: 0 }));
+    txUpdateButtons();
+    try {
+      txEnsureWorker().postMessage({ type: 'load', engineUrl: NK.transcribe.ENGINE_URL, model: model.id });
+    } catch (err) { txFailLoad(err); }
+  });
+  $('btnTxCancel').addEventListener('click', function () {
+    if (tx.loading) {
+      if (tx.worker) { try { tx.worker.terminate(); } catch (e) { } tx.worker = null; }
+      tx.busy = false; tx.loading = false; tx.ready = false; tx.readyModel = null;
+      $('txProgress').classList.add('hidden');
+      txSetStatus(t('txLoadCancelled'));
+      txUpdateButtons();
+    } else {
+      tx.cancel = true; /* the chunk loop stops after the current chunk */
+    }
+  });
+  $('btnTxStart').addEventListener('click', function () {
+    if (tx.busy) return;
+    if (!state.mediaFile) { txSetStatus(t('txNeedMedia')); return; }
+    if (!(tx.ready && tx.readyModel === currentTxModel().id)) return;
+    tx.busy = true; tx.cancel = false;
+    $('txProgress').classList.remove('hidden');
+    $('txProgress').value = 0;
+    txSetStatus(t('txDecoding'));
+    txUpdateButtons();
+    var language = NK.transcribe.languageName($('selAsrLang').value);
+    decodeMediaTo16k(state.mediaFile).then(function (audio) {
+      var durationMs = Math.round(audio.length / NK.transcribe.SAMPLE_RATE * 1000);
+      var plan = NK.transcribe.planChunks(durationMs);
+      var all = [], i = 0;
+      function finish() {
+        var cues = $('chkDictAuto').checked ? NK.dict.applyToCues(all) : all;
+        var merged = state.cues.concat(cues);
+        merged.sort(function (a, b) { return (a.start - b.start) || (a.end - b.end); });
+        setCues(true, merged);
+        tx.busy = false;
+        $('txProgress').classList.add('hidden');
+        txSetStatus(tx.cancel ? tf('txCancelled', { n: cues.length }) : tf('txDone', { n: cues.length }));
+        txUpdateButtons();
+      }
+      function next() {
+        if (tx.cancel || i >= plan.length) { finish(); return; }
+        var chunk = plan[i];
+        var s0 = Math.floor(chunk.startMs / 1000 * NK.transcribe.SAMPLE_RATE);
+        var s1 = Math.floor(chunk.endMs / 1000 * NK.transcribe.SAMPLE_RATE);
+        txCallTranscribe(audio.slice(s0, s1), language).then(function (chunks) {
+          all = all.concat(NK.transcribe.chunksToCues(chunks, chunk.startMs, chunk.endMs));
+          i++;
+          var pct = plan.length ? Math.round(i / plan.length * 100) : 100;
+          $('txProgress').value = pct;
+          txSetStatus(tf('txRunning', { done: i, total: plan.length, pct: pct }));
+          next();
+        }).catch(function (err) {
+          tx.busy = false;
+          $('txProgress').classList.add('hidden');
+          txSetStatus(tf('txFailed', { msg: String((err && err.message) || err) }));
+          txUpdateButtons();
+        });
+      }
+      next();
+    }).catch(function () {
+      tx.busy = false;
+      $('txProgress').classList.add('hidden');
+      txSetStatus(t('txDecodeFailed'));
+      txUpdateButtons();
+    });
+  });
+
   /* ---------- init ---------- */
   $('verLabel').textContent = 'v' + NK.version;
   restore();
   applyI18n();
+  /* Transcribe panel first: renderAll() below touches NK.wave, which is only
+     defined by the following script block, and must not block this init. */
+  renderTxModels();
+  txUpdateButtons();
+  if (!state.mediaFile) txSetStatus(t('txNeedMedia'));
   renderAll();
 })();
 </script>
