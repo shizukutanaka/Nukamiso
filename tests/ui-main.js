@@ -12,6 +12,7 @@ const root = path.join(__dirname, '..');
 const docsDir = path.join(root, 'docs');
 const tmpDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'nk-ui-'));
 const results = { checks: [], downloads: [] };
+const pageErrors = [];
 function check(name, cond) {
   results.checks.push({ name, ok: !!cond });
   if (!cond) console.error('UI FAIL: ' + name);
@@ -29,7 +30,7 @@ app.whenReady().then(async () => {
     item.setSavePath(p);
     item.once('done', (e, state) => { results.downloads.push({ file: item.getFilename(), state, path: p }); });
   });
-  win.webContents.on('console-message', (e, level, msg) => { if (level >= 2) console.error('PAGE:', msg); });
+  win.webContents.on('console-message', (e, level, msg) => { if (level >= 2) console.error('PAGE:', msg); if (level >= 3) pageErrors.push(String(msg)); });
   await win.loadFile(path.join(root, 'nukamiso.html'));
   const run = (code) => win.webContents.executeJavaScript(code, true);
 
@@ -191,6 +192,13 @@ app.whenReady().then(async () => {
     fs.writeFileSync(path.join(docsDir, 'screenshot-editor-en.png'), img2.toPNG());
     check('screenshots written', fs.statSync(path.join(docsDir, 'screenshot-editor.png')).size > 5000 &&
       fs.statSync(path.join(docsDir, 'screenshot-editor-en.png')).size > 5000);
+
+    /* Regression: page init (and the reload above) must not throw.
+       The UI init used to call NK.wave.setCues before the waveform
+       module's script block had defined NK.wave, producing an uncaught
+       TypeError on every load. Page errors are collected from the
+       console-message handler for the whole run. */
+    check('no page console errors during load and run', pageErrors.length === 0);
   } catch (e) {
     console.error('UI ERROR', e);
     results.error = String(e && e.message || e);
