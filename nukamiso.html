@@ -684,6 +684,95 @@ NK.burn = {
 };
 /* ==== NK CORE END ==== */
 </script>
+<script>
+'use strict';
+/* ==== Waveform view (Phase E) — isolated module, Web Audio + canvas only.
+        Exposed as NK.wave and aliased to NK.waveSurfer so the same API
+        works in the browser and inside the Tauri shell. ==== */
+(function () {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  var wave = {
+    peaks: null, duration: 0, cues: [], playhead: 0, _ctx: null,
+    loadFile: function (file) {
+      var self = this;
+      file.arrayBuffer().then(function (buf) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        if (!self._ctx) self._ctx = new AC();
+        return self._ctx.decodeAudioData(buf.slice(0));
+      }).then(function (audioBuf) {
+        if (!audioBuf) return;
+        self.duration = audioBuf.duration;
+        var ch = audioBuf.getChannelData(0);
+        var buckets = 1200, peaks = new Float32Array(buckets);
+        var per = Math.max(1, Math.floor(ch.length / buckets));
+        for (var i = 0; i < buckets; i++) {
+          var max = 0, off = i * per;
+          for (var j = 0; j < per; j += 16) {
+            var v = Math.abs(ch[off + j] || 0);
+            if (v > max) max = v;
+          }
+          peaks[i] = max;
+        }
+        self.peaks = peaks;
+        self.draw();
+      }).catch(function () { /* audio decode is best-effort */ });
+    },
+    setCues: function (cues) { this.cues = cues || []; this.draw(); },
+    setPlayhead: function (sec) { this.playhead = sec || 0; this.draw(); },
+    draw: function () {
+      var canvas = document.getElementById('waveCanvas');
+      if (!canvas || !canvas.getContext) return;
+      var ctx = canvas.getContext('2d');
+      var W = canvas.width, H = canvas.height;
+      ctx.fillStyle = '#1c1917'; ctx.fillRect(0, 0, W, H);
+      var dur = this.duration || 0;
+      /* cue regions */
+      if (dur > 0) {
+        ctx.fillStyle = 'rgba(179,84,30,0.35)';
+        for (var i = 0; i < this.cues.length; i++) {
+          var x1 = (this.cues[i].start / 1000 / dur) * W;
+          var x2 = (this.cues[i].end / 1000 / dur) * W;
+          ctx.fillRect(x1, 0, Math.max(1, x2 - x1), H);
+        }
+      }
+      /* peaks */
+      if (this.peaks) {
+        ctx.fillStyle = '#a8a29e';
+        var mid = H / 2, n = this.peaks.length;
+        for (var x = 0; x < W; x++) {
+          var p = this.peaks[Math.floor(x / W * n)] || 0;
+          var h = Math.max(1, p * (H - 8));
+          ctx.fillRect(x, mid - h / 2, 1, h);
+        }
+      } else {
+        ctx.fillStyle = '#78716c';
+        ctx.font = '12px sans-serif';
+        ctx.fillText('waveform: open a media file', 10, H / 2);
+      }
+      /* playhead */
+      if (dur > 0) {
+        ctx.fillStyle = '#facc15';
+        var px = (this.playhead / dur) * W;
+        ctx.fillRect(px, 0, 2, H);
+      }
+    }
+  };
+  NK.wave = wave;
+  NK.waveSurfer = wave; /* same isolated API surface as the design's NK.waveSurfer */
+  var canvas = document.getElementById('waveCanvas');
+  if (canvas) {
+    canvas.addEventListener('click', function (ev) {
+      var media = document.getElementById('media');
+      if (!media || !wave.duration) return;
+      var rect = canvas.getBoundingClientRect();
+      var ratio = (ev.clientX - rect.left) / rect.width;
+      try { media.currentTime = ratio * wave.duration; } catch (e) { }
+    });
+  }
+})();
+</script>
+
 
 <script>
 'use strict';
@@ -1476,8 +1565,8 @@ NK.burn = {
   $('verLabel').textContent = 'v' + NK.version;
   restore();
   applyI18n();
-  /* Transcribe panel first: renderAll() below touches NK.wave, which is only
-     defined by the following script block, and must not block this init. */
+  /* renderAll() below touches NK.wave; the waveform module's script block
+     sits above this one, so NK.wave is already defined at this point. */
   renderTxModels();
   txUpdateButtons();
   if (!state.mediaFile) txSetStatus(t('txNeedMedia'));
@@ -1487,95 +1576,6 @@ NK.burn = {
   if (!burn.mime) burnSetStatus(t('burnUnsupported'));
   else if (!state.mediaFile) burnSetStatus(t('burnNeedMedia'));
   renderAll();
-})();
-</script>
-
-<script>
-'use strict';
-/* ==== Waveform view (Phase E) — isolated module, Web Audio + canvas only.
-        Exposed as NK.wave and aliased to NK.waveSurfer so the same API
-        works in the browser and inside the Tauri shell. ==== */
-(function () {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return;
-  var wave = {
-    peaks: null, duration: 0, cues: [], playhead: 0, _ctx: null,
-    loadFile: function (file) {
-      var self = this;
-      file.arrayBuffer().then(function (buf) {
-        var AC = window.AudioContext || window.webkitAudioContext;
-        if (!AC) return;
-        if (!self._ctx) self._ctx = new AC();
-        return self._ctx.decodeAudioData(buf.slice(0));
-      }).then(function (audioBuf) {
-        if (!audioBuf) return;
-        self.duration = audioBuf.duration;
-        var ch = audioBuf.getChannelData(0);
-        var buckets = 1200, peaks = new Float32Array(buckets);
-        var per = Math.max(1, Math.floor(ch.length / buckets));
-        for (var i = 0; i < buckets; i++) {
-          var max = 0, off = i * per;
-          for (var j = 0; j < per; j += 16) {
-            var v = Math.abs(ch[off + j] || 0);
-            if (v > max) max = v;
-          }
-          peaks[i] = max;
-        }
-        self.peaks = peaks;
-        self.draw();
-      }).catch(function () { /* audio decode is best-effort */ });
-    },
-    setCues: function (cues) { this.cues = cues || []; this.draw(); },
-    setPlayhead: function (sec) { this.playhead = sec || 0; this.draw(); },
-    draw: function () {
-      var canvas = document.getElementById('waveCanvas');
-      if (!canvas || !canvas.getContext) return;
-      var ctx = canvas.getContext('2d');
-      var W = canvas.width, H = canvas.height;
-      ctx.fillStyle = '#1c1917'; ctx.fillRect(0, 0, W, H);
-      var dur = this.duration || 0;
-      /* cue regions */
-      if (dur > 0) {
-        ctx.fillStyle = 'rgba(179,84,30,0.35)';
-        for (var i = 0; i < this.cues.length; i++) {
-          var x1 = (this.cues[i].start / 1000 / dur) * W;
-          var x2 = (this.cues[i].end / 1000 / dur) * W;
-          ctx.fillRect(x1, 0, Math.max(1, x2 - x1), H);
-        }
-      }
-      /* peaks */
-      if (this.peaks) {
-        ctx.fillStyle = '#a8a29e';
-        var mid = H / 2, n = this.peaks.length;
-        for (var x = 0; x < W; x++) {
-          var p = this.peaks[Math.floor(x / W * n)] || 0;
-          var h = Math.max(1, p * (H - 8));
-          ctx.fillRect(x, mid - h / 2, 1, h);
-        }
-      } else {
-        ctx.fillStyle = '#78716c';
-        ctx.font = '12px sans-serif';
-        ctx.fillText('waveform: open a media file', 10, H / 2);
-      }
-      /* playhead */
-      if (dur > 0) {
-        ctx.fillStyle = '#facc15';
-        var px = (this.playhead / dur) * W;
-        ctx.fillRect(px, 0, 2, H);
-      }
-    }
-  };
-  NK.wave = wave;
-  NK.waveSurfer = wave; /* same isolated API surface as the design's NK.waveSurfer */
-  var canvas = document.getElementById('waveCanvas');
-  if (canvas) {
-    canvas.addEventListener('click', function (ev) {
-      var media = document.getElementById('media');
-      if (!media || !wave.duration) return;
-      var rect = canvas.getBoundingClientRect();
-      var ratio = (ev.clientX - rect.left) / rect.width;
-      try { media.currentTime = ratio * wave.duration; } catch (e) { }
-    });
-  }
 })();
 </script>
 </body>
