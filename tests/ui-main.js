@@ -21,7 +21,9 @@ app.disableHardwareAcceleration();
 /* Hermetic run: fresh profile so localStorage from earlier runs cannot leak in. */
 app.setPath('userData', fs.mkdtempSync(path.join(require('os').tmpdir(), 'nk-ui-profile-')));
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ width: 1280, height: 900, show: false, webPreferences: { contextIsolation: true } });
+  /* backgroundThrottling off: the burned-in export is driven by
+     requestAnimationFrame, which a throttled hidden window would starve. */
+  const win = new BrowserWindow({ width: 1280, height: 900, show: false, webPreferences: { contextIsolation: true, backgroundThrottling: false } });
   win.webContents.session.on('will-download', (ev, item) => {
     const p = path.join(tmpDir, item.getFilename());
     item.setSavePath(p);
@@ -32,7 +34,7 @@ app.whenReady().then(async () => {
   const run = (code) => win.webContents.executeJavaScript(code, true);
 
   try {
-    check('NK namespace exists', await run('typeof NK === "object" && NK.version === "2.1.0"'));
+    check('NK namespace exists', await run('typeof NK === "object" && NK.version === "2.2.0"'));
     check('wave module isolated', await run('!!(NK.wave && NK.waveSurfer === NK.wave)'));
     check('ASR unsupported notice handled', await run('!!document.getElementById("asrUnsupported")'));
 
@@ -44,6 +46,13 @@ app.whenReady().then(async () => {
     check('transcribe start disabled before engine+media', await run('document.getElementById("btnTxStart").disabled === true'));
     check('transcribe core present', await run('!!(NK.transcribe && NK.transcribe.planChunks(61000).length === 3 && NK.transcribe.chunksToCues([{timestamp:[0,1.5],text:" hi "}],0,30000)[0].text === "hi")'));
     check('no network before explicit download', await run('NK.transcribe.ENGINE_URL.indexOf("https://cdn.jsdelivr.net/") === 0 && typeof Worker === "function"'));
+
+    /* --- burned-in export panel (Phase I): present, honest, inert until
+           a media file is opened. The full export is exercised below. --- */
+    check('burn panel exists', await run('!!(document.getElementById("btnBurnStart") && document.getElementById("btnBurnCancel") && document.getElementById("burnStatus"))'));
+    check('burn info states honest limits', await run('(function(){var s=document.getElementById("burnInfo").textContent; return s.indexOf("メモリ")>=0 && s.indexOf("再生時間")>=0;})()'));
+    check('burn start disabled before media', await run('document.getElementById("btnBurnStart").disabled === true'));
+    check('burn core present', await run('!!(NK.burn && NK.burn.cueAt([{start:0,end:1000,text:"x"}],500).text === "x" && NK.burn.layout("x",384,288,function(s){return s.length*24;}).fontPx === 48)'));
 
     /* --- open: feed a subtitle file through the real file input --- */
     const srt = '1\\n00:00:01,000 --> 00:00:02,500\\nぬかみそテスト\\n\\n2\\n00:00:03,000 --> 00:00:04,500\\n二行目です\\n';
@@ -100,6 +109,76 @@ app.whenReady().then(async () => {
       const NK2 = await run('NK.parse.srt(' + JSON.stringify(saved) + ').length');
       check('saved SRT has 3 cues', NK2 === 3);
     }
+
+    /* --- burned-in export (Phase I): synthesize a tiny real video in the
+           page (canvas + MediaRecorder), open it through the real file
+           input, burn the current cues in, and verify the download plays
+           back. The restored cues cover 1.0s-2.5s, so the 1.5s fixture
+           overlaps the first cue. --- */
+    const fixtureOk = await run(`(async function(){
+      var mime = NK.burn.pickMimeType(function(m){ return MediaRecorder.isTypeSupported(m); });
+      if (!mime) return 'no-mime';
+      var c = document.createElement('canvas'); c.width = 320; c.height = 180;
+      var x = c.getContext('2d');
+      var rec = new MediaRecorder(c.captureStream(30), { mimeType: mime });
+      var chunks = [];
+      rec.ondataavailable = function(e){ if (e.data && e.data.size) chunks.push(e.data); };
+      var stopped = new Promise(function(r){ rec.onstop = r; });
+      var t0 = Date.now();
+      var timer = setInterval(function(){
+        var el = (Date.now() - t0) / 1000;
+        x.fillStyle = el < 0.75 ? '#204060' : '#602040';
+        x.fillRect(0, 0, 320, 180);
+      }, 50);
+      rec.start(200);
+      await new Promise(function(r){ setTimeout(r, 1500); });
+      clearInterval(timer);
+      rec.stop(); await stopped;
+      var blob = new Blob(chunks, { type: mime.split(';')[0] });
+      var dt = new DataTransfer();
+      dt.items.add(new File([blob], 'fixture.' + (mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm'), { type: blob.type }));
+      var inp = document.getElementById('fileMedia');
+      inp.files = dt.files;
+      inp.dispatchEvent(new Event('change'));
+      return 'fed';
+    })()`);
+    check('video fixture synthesized and opened', fixtureOk === 'fed');
+    await new Promise(r => setTimeout(r, 1200));
+    check('burn start enabled with media', await run('document.getElementById("btnBurnStart").disabled === false'));
+    const downloadsBefore = results.downloads.length;
+    await run('document.getElementById("btnBurnStart").click()');
+    let burnDl = null;
+    for (let i = 0; i < 40 && !burnDl; i++) {
+      await new Promise(r => setTimeout(r, 750));
+      burnDl = results.downloads.slice(downloadsBefore).find(d => /^subtitled\./.test(d.file) && d.state === 'completed') || null;
+    }
+    check('burn export produced a download', !!burnDl);
+    if (burnDl) {
+      const buf = fs.readFileSync(burnDl.path);
+      check('burned file has content', buf.length > 2000);
+      const isWebm = buf.length > 4 && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3;
+      const isMp4 = buf.length > 8 && buf.toString('latin1', 4, 8) === 'ftyp';
+      check('burned file is a real video container', isWebm || isMp4);
+      /* Play the exported file back in a fresh window and read its
+         dimensions/duration from the media element. loadFile() cannot
+         open a bare media file in Electron, so go through a tiny player
+         page in the same temp dir. Any harness error here fails the
+         check, never the whole run. */
+      let info = null;
+      const win2 = new BrowserWindow({ width: 640, height: 400, show: false, webPreferences: { contextIsolation: true, backgroundThrottling: false } });
+      try {
+        const playerPath = path.join(tmpDir, 'player.html');
+        fs.writeFileSync(playerPath, '<!DOCTYPE html><video id="v" src="file://' + burnDl.path + '" autoplay muted playsinline></video>');
+        await win2.loadFile(playerPath);
+        for (let i = 0; i < 20 && !info; i++) {
+          await new Promise(r => setTimeout(r, 400));
+          info = await win2.webContents.executeJavaScript('(function(){var v=document.getElementById("v"); return (v && v.videoWidth) ? {w:v.videoWidth,h:v.videoHeight,d:v.duration} : null;})()').catch(() => null);
+        }
+      } catch (e) { info = null; }
+      win2.close();
+      check('burned video plays back (320x180, >0.5s)', !!info && info.w === 320 && info.h === 180 && info.d > 0.5);
+    }
+    check('burn status reports the export', await run('document.getElementById("burnStatus").textContent.indexOf("subtitled.") >= 0'));
 
     /* --- screenshots: Japanese UI, then English UI after language toggle --- */
     fs.mkdirSync(docsDir, { recursive: true });

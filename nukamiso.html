@@ -126,6 +126,16 @@ label.chk{font-size:12px;color:var(--sub);display:inline-flex;gap:4px;align-item
         <progress id="txProgress" value="0" max="100" style="width:100%" class="hidden"></progress>
         <div id="txStatus" style="font-size:12px;color:var(--sub)"></div>
       </div>
+      <div style="border-top:1px solid var(--line);margin-top:10px;padding-top:10px">
+        <div style="font-weight:bold;margin-bottom:4px">🎬 <span data-i18n="burnTitle">字幕を焼き込んで書き出し（端末内）</span></div>
+        <div id="burnInfo" style="font-size:12px;color:var(--sub)"></div>
+        <div class="toolbar" style="margin-top:6px">
+          <button class="btn primary" id="btnBurnStart" disabled data-i18n="burnStart">焼き込み書き出し</button>
+          <button class="btn" id="btnBurnCancel" disabled data-i18n="burnCancel">中断</button>
+        </div>
+        <progress id="burnProgress" value="0" max="100" style="width:100%" class="hidden"></progress>
+        <div id="burnStatus" style="font-size:12px;color:var(--sub)"></div>
+      </div>
     </div>
     <div class="panel">
       <h2><span data-i18n="track2">翻訳トラック（第2言語）</span><span class="tag">Phase C</span></h2>
@@ -150,14 +160,14 @@ label.chk{font-size:12px;color:var(--sub);display:inline-flex;gap:4px;align-item
 var NK = (typeof window !== 'undefined' && window.NK) ? window.NK : {};
 if (typeof window !== 'undefined') window.NK = NK;
 
-NK.version = '2.1.0';
+NK.version = '2.2.0';
 /* These flags describe the shipped file itself: it bundles no dependencies,
    sends no telemetry, and by default makes no network requests at all.
    Phase H is the single opt-in exception: the transcription engine/model are
    fetched ONLY when the user explicitly clicks the download button, and even
    then audio/subtitle data never leaves the device (inference is local). */
 NK.config = { zeroDep: true, singleFile: true, localFirst: true, zeroTelemetry: true };
-NK.features = { phaseA: true, phaseB: true, phaseC: true, phaseD: true, phaseE: true, phaseF: true, phaseG: true, phaseH: true };
+NK.features = { phaseA: true, phaseB: true, phaseC: true, phaseD: true, phaseE: true, phaseF: true, phaseG: true, phaseH: true, phaseI: true };
 
 /* ---------- time utilities (all times are milliseconds) ---------- */
 NK.time = {
@@ -566,6 +576,112 @@ NK.transcribe = {
     return undefined;
   }
 };
+
+/* ---------- burned-in subtitle export (Phase I) ----------
+   Pure planning logic for rendering the current cues INTO a video file
+   (canvas + MediaRecorder in the UI section). Everything runs on-device:
+   no network, no new dependencies, no CSP change.
+   The drawing style deliberately mirrors the product's one existing
+   subtitle rendering spec, the ASS export Default style (see
+   NK.serialize.ass): Arial, Fontsize 48, white primary colour, black
+   outline of width 2, Alignment 2 (bottom-centre), MarginV 10. ASS files
+   written by Nukamiso declare no PlayRes, for which the reference frame
+   height is 288, so sizes are expressed as ratios of the frame height
+   and reproduce the ASS look at any resolution (48/288, 10/288, 2/48). */
+NK.burn = {
+  STYLE: {
+    fontFamily: 'Arial, sans-serif',
+    color: '#ffffff',        /* ASS PrimaryColour &H00FFFFFF */
+    outlineColor: '#000000', /* ASS OutlineColour &H00000000 */
+    fontRatio: 48 / 288,     /* ASS Fontsize 48 at reference height 288 */
+    marginVRatio: 10 / 288,  /* ASS MarginV 10 at reference height 288 */
+    outlineRatio: 2 / 48,    /* ASS Outline 2 relative to Fontsize 48 */
+    lineHeight: 1.25,
+    maxWidthRatio: 0.92      /* keep wrapped text off the frame edges */
+  },
+  /* Re-encode container preferences, best first. MP4 where the browser's
+     MediaRecorder offers it (recent Safari / Chrome), WebM elsewhere. */
+  CANDIDATE_MIMES: [
+    'video/mp4',
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm'
+  ],
+  /* The cue on screen at tMs, using the same rule as the editor's
+     playback highlight: the first cue with start <= t < end. */
+  cueAt: function (cues, tMs) {
+    var cs = cues || [];
+    for (var i = 0; i < cs.length; i++) {
+      if (tMs >= cs[i].start && tMs < cs[i].end) return cs[i];
+    }
+    return null;
+  },
+  /* First candidate the injected predicate accepts, else null.
+     The UI passes MediaRecorder.isTypeSupported; tests pass a fake. */
+  pickMimeType: function (isSupported) {
+    if (typeof isSupported !== 'function') return null;
+    for (var i = 0; i < NK.burn.CANDIDATE_MIMES.length; i++) {
+      try { if (isSupported(NK.burn.CANDIDATE_MIMES[i])) return NK.burn.CANDIDATE_MIMES[i]; }
+      catch (e) { /* a throwing predicate just rules that candidate out */ }
+    }
+    return null;
+  },
+  outputName: function (mimeType) {
+    return String(mimeType || '').indexOf('mp4') >= 0 ? 'subtitled.mp4' : 'subtitled.webm';
+  },
+  /* MediaRecorder's default bitrate is low enough to blur subtitle
+     edges, so scale with pixel count, clamped to a sane range. */
+  videoBitrate: function (width, height) {
+    var px = Math.max(0, (Number(width) || 0) * (Number(height) || 0));
+    var bps = Math.round(px * 5);
+    if (bps < 2500000) bps = 2500000;
+    if (bps > 16000000) bps = 16000000;
+    return bps;
+  },
+  /* Greedy per-character wrap (works for Japanese text without spaces).
+     measure(str, fontPx) -> width in px is injected: the UI measures with
+     a real canvas context, tests with a fake. Explicit newlines in the
+     cue text are preserved as line breaks. Never throws. */
+  wrapLines: function (text, maxWidthPx, fontPx, measure) {
+    var out = [];
+    var raw = String(text == null ? '' : text).split('\n');
+    for (var i = 0; i < raw.length; i++) {
+      var line = raw[i];
+      if (!line || !(maxWidthPx > 0) || typeof measure !== 'function' ||
+          measure(line, fontPx) <= maxWidthPx) { out.push(line); continue; }
+      var cur = '';
+      for (var j = 0; j < line.length; j++) {
+        var cand = cur + line[j];
+        if (cur && measure(cand, fontPx) > maxWidthPx) { out.push(cur); cur = line[j]; }
+        else cur = cand;
+      }
+      if (cur) out.push(cur);
+    }
+    return out;
+  },
+  /* Geometry for one cue on a width x height frame:
+     { fontPx, lineHeightPx, outlinePx (visible thickness), marginV,
+       lines: [{ text, x (centre), y (baseline) }] }.
+     Lines stack upward from the bottom margin, ASS Alignment 2 style. */
+  layout: function (text, width, height, measure) {
+    var S = NK.burn.STYLE;
+    var w = Math.max(0, Number(width) || 0), h = Math.max(0, Number(height) || 0);
+    var fontPx = Math.max(8, Math.round(h * S.fontRatio));
+    var lineHeightPx = Math.round(fontPx * S.lineHeight);
+    var outlinePx = Math.max(1, Math.round(fontPx * S.outlineRatio));
+    var marginV = Math.round(h * S.marginVRatio);
+    var lines = NK.burn.wrapLines(text, Math.floor(w * S.maxWidthRatio), fontPx, measure);
+    var lastBaseline = h - marginV - Math.round(fontPx * 0.22);
+    var items = [];
+    for (var i = 0; i < lines.length; i++) {
+      items.push({
+        text: lines[i], x: Math.round(w / 2),
+        y: lastBaseline - (lines.length - 1 - i) * lineHeightPx
+      });
+    }
+    return { fontPx: fontPx, lineHeightPx: lineHeightPx, outlinePx: outlinePx, marginV: marginV, lines: items };
+  }
+};
 /* ==== NK CORE END ==== */
 </script>
 
@@ -597,7 +713,19 @@ NK.transcribe = {
       txRunning: '文字起こし中… {done}/{total}（{pct}%）',
       txDone: '文字起こし完了: {n} 行の字幕を追加しました。',
       txCancelled: '中断しました（{n} 行の字幕を追加しました）。',
-      txFailed: '文字起こしに失敗しました: {msg}' },
+      txFailed: '文字起こしに失敗しました: {msg}',
+      burnTitle: '字幕を焼き込んで書き出し（端末内）', burnStart: '焼き込み書き出し', burnCancel: '中断',
+      burnInfo: '開いた動画に現在の字幕（第1トラック）を焼き込み、新しい動画ファイルとして書き出します。処理は端末内だけで行われ、動画・音声・字幕が送信されることはありません。書き出しは動画を再生しながら行うため、再生時間とほぼ同じ時間がかかり、その間このタブを開いたままにしてください。出力はブラウザが対応する形式（MP4 または WebM）で、結果全体をメモリに保持するため、長い動画（目安として10分を超えるもの）ではメモリ不足で失敗することがあります。',
+      burnNeedMedia: '先に「動画/音声を開く」で動画ファイルを選んでください。',
+      burnNoCues: '字幕がありません。先に字幕を作成または読み込んでください。',
+      burnUnsupported: 'このブラウザは動画の再エンコード（MediaRecorder）に対応していないため、焼き込み書き出しは使えません。字幕ファイル（SRT など）の書き出しは通常どおり使えます。',
+      burnNoCapture: 'このブラウザでは映像の取り込み（canvas.captureStream）に対応していないため、焼き込み書き出しは使えません。',
+      burnAudioOnly: 'このファイルには映像がありません（音声のみ）。焼き込みは動画ファイルでお試しください。',
+      burnRunning: '焼き込み中… {pct}%（このタブを開いたままにしてください）',
+      burnDone: '書き出しました: {name}',
+      burnNoAudio: '※音声を取り込めなかったため、無音の動画になっています。',
+      burnCancelled: '中断しました（ファイルは書き出していません）。',
+      burnFailed: '焼き込みに失敗しました: {msg}' },
     en: { openSub: 'Open subtitles', openMedia: 'Open video/audio', saveAs: 'Format', save: 'Save', validate: 'Validate',
       cues: 'Subtitle cues', addCue: '+ Add', shiftAll: 'Shift all', dictAuto: 'Auto-apply dictionary', dictApply: 'Apply dictionary to all cues',
       colStart: 'Start', colEnd: 'End', colText: 'Text', dictTitle: 'User dictionary', dictFrom: 'Mis-recognized (e.g. nukamiso)',
@@ -619,7 +747,19 @@ NK.transcribe = {
       txRunning: 'Transcribing… {done}/{total} ({pct}%)',
       txDone: 'Done: added {n} subtitle cues.',
       txCancelled: 'Cancelled (added {n} subtitle cues).',
-      txFailed: 'Transcription failed: {msg}' }
+      txFailed: 'Transcription failed: {msg}',
+      burnTitle: 'Burn subtitles into video (on-device)', burnStart: 'Export with burned-in subtitles', burnCancel: 'Cancel',
+      burnInfo: 'Renders the current subtitles (track 1) into the opened video and exports a new video file. Everything happens on this device: the video, audio and subtitles are never sent anywhere. Export plays the video through in real time, so it takes about as long as the video itself; keep this tab open meanwhile. The output format is whichever your browser supports (MP4 or WebM), and the whole result is held in memory, so long videos (as a guide, over about 10 minutes) may fail when memory runs out.',
+      burnNeedMedia: 'First choose a video file with "Open video/audio".',
+      burnNoCues: 'There are no subtitles yet. Create or open subtitles first.',
+      burnUnsupported: 'This browser cannot re-encode video (no MediaRecorder), so burned-in export is unavailable. Exporting subtitle files (SRT etc.) works as usual.',
+      burnNoCapture: 'This browser cannot capture canvas video (no canvas.captureStream), so burned-in export is unavailable.',
+      burnAudioOnly: 'This file has no picture (audio only). Burned-in export needs a video file.',
+      burnRunning: 'Burning in… {pct}% (keep this tab open)',
+      burnDone: 'Exported: {name}',
+      burnNoAudio: 'Note: the audio could not be captured, so the exported video is silent.',
+      burnCancelled: 'Cancelled (no file was exported).',
+      burnFailed: 'Burned-in export failed: {msg}' }
   };
   var lang = 'ja';
   function t(k) { return (I18N[lang] && I18N[lang][k]) || I18N.ja[k] || k; }
@@ -737,7 +877,9 @@ NK.transcribe = {
   /* ---------- file open / save ---------- */
   var fileHandles = {};
   function download(name, text) {
-    var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    downloadBlob(name, new Blob([text], { type: 'text/plain;charset=utf-8' }));
+  }
+  function downloadBlob(name, blob) {
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click();
@@ -789,6 +931,7 @@ NK.transcribe = {
     mediaEl.src = state.mediaURL;
     NK.wave.loadFile(f);
     txUpdateButtons();
+    burnUpdateButtons();
     this.value = '';
   });
   $('btnSave').addEventListener('click', function () { saveCues(state.cues, $('selFormat').value); });
@@ -825,7 +968,7 @@ NK.transcribe = {
   });
   $('btnLang').addEventListener('click', function () {
     lang = lang === 'ja' ? 'en' : 'ja';
-    applyI18n(); renderAll(); renderTxModels(); txUpdateButtons(); persistSoon();
+    applyI18n(); renderAll(); renderTxModels(); txUpdateButtons(); renderBurnInfo(); burnUpdateButtons(); persistSoon();
   });
 
   /* ---------- media sync: highlight current cue ---------- */
@@ -1122,6 +1265,213 @@ NK.transcribe = {
     });
   });
 
+  /* ---------- burned-in subtitle export (Phase I) ----------
+     Re-encodes the opened video entirely on-device: an offscreen <video>
+     plays the file while each frame is drawn to a canvas with the current
+     cue rendered on top (NK.burn geometry, mirroring the ASS style), and
+     canvas.captureStream + MediaRecorder produce the output file. Audio
+     is routed through Web Audio into the same recording. Nothing is
+     uploaded and no network is used; the CSP is unchanged. Processing is
+     real-time (it takes as long as the video plays) and the result is
+     assembled in memory, which is why the panel states honest limits. */
+  var burn = { busy: false, cancel: false, settled: false, mime: null,
+               video: null, rec: null, actx: null, rafId: 0, timerId: 0, lastPct: -1 };
+  function burnSetStatus(msg) { $('burnStatus').textContent = msg || ''; }
+  function renderBurnInfo() { $('burnInfo').textContent = t('burnInfo'); }
+  function burnMimeType() {
+    if (typeof MediaRecorder === 'undefined') return null;
+    return NK.burn.pickMimeType(function (m) { return MediaRecorder.isTypeSupported(m); });
+  }
+  function burnUpdateButtons() {
+    if (burn.mime === null && !burn.busy) burn.mime = burnMimeType();
+    $('btnBurnStart').disabled = burn.busy || !state.mediaFile || !burn.mime;
+    $('btnBurnCancel').disabled = !burn.busy;
+    $('btnOpenMedia').disabled = burn.busy; /* swapping the source mid-export would revoke its URL */
+  }
+  function burnCleanup() {
+    if (burn.rafId) { cancelAnimationFrame(burn.rafId); burn.rafId = 0; }
+    if (burn.timerId) { clearInterval(burn.timerId); burn.timerId = 0; }
+    if (burn.video) {
+      try { burn.video.pause(); } catch (e) { }
+      burn.video.removeAttribute('src');
+      burn.video = null;
+    }
+    if (burn.actx) { try { burn.actx.close(); } catch (e) { } burn.actx = null; }
+    burn.rec = null;
+  }
+  function burnFinishUi() {
+    burn.busy = false;
+    $('burnProgress').classList.add('hidden');
+    burnUpdateButtons();
+  }
+  function burnFail(msg) {
+    if (burn.settled) return;
+    burn.settled = true;
+    if (burn.rec && burn.rec.state !== 'inactive') { try { burn.rec.stop(); } catch (e) { } }
+    burnCleanup();
+    burnFinishUi();
+    burnSetStatus(tf('burnFailed', { msg: msg }));
+  }
+  function burnAbortCancelled() {
+    if (burn.settled) return;
+    burn.settled = true;
+    burnCleanup();
+    burnFinishUi();
+    burnSetStatus(t('burnCancelled'));
+  }
+  function burnDrawCue(ctx, w, h, tMs) {
+    var cue = NK.burn.cueAt(state.cues, tMs);
+    if (!cue || !String(cue.text || '').trim()) return;
+    var lay = NK.burn.layout(cue.text, w, h, function (s, fontPx) {
+      ctx.font = fontPx + 'px ' + NK.burn.STYLE.fontFamily;
+      return ctx.measureText(s).width;
+    });
+    ctx.font = lay.fontPx + 'px ' + NK.burn.STYLE.fontFamily;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.lineJoin = 'round';
+    /* layout's outlinePx is the VISIBLE outline thickness; strokeText
+       centres the stroke on the glyph edge, so double it here. */
+    ctx.lineWidth = lay.outlinePx * 2;
+    ctx.strokeStyle = NK.burn.STYLE.outlineColor;
+    ctx.fillStyle = NK.burn.STYLE.color;
+    for (var i = 0; i < lay.lines.length; i++) {
+      if (!lay.lines[i].text) continue;
+      ctx.strokeText(lay.lines[i].text, lay.lines[i].x, lay.lines[i].y);
+      ctx.fillText(lay.lines[i].text, lay.lines[i].x, lay.lines[i].y);
+    }
+  }
+  $('btnBurnCancel').addEventListener('click', function () {
+    if (!burn.busy) return;
+    burn.cancel = true;
+    if (burn.rec && burn.rec.state !== 'inactive') { try { burn.rec.stop(); } catch (e) { } }
+    else burnAbortCancelled();
+  });
+  $('btnBurnStart').addEventListener('click', function () {
+    if (burn.busy) return;
+    if (!state.mediaFile) { burnSetStatus(t('burnNeedMedia')); return; }
+    if (!state.cues.length) { burnSetStatus(t('burnNoCues')); return; }
+    burn.mime = burnMimeType();
+    if (!burn.mime) { burnSetStatus(t('burnUnsupported')); return; }
+    if (typeof HTMLCanvasElement === 'undefined' || !HTMLCanvasElement.prototype.captureStream) {
+      burnSetStatus(t('burnNoCapture')); return;
+    }
+    burn.busy = true; burn.cancel = false; burn.settled = false; burn.lastPct = -1;
+    $('burnProgress').classList.remove('hidden');
+    $('burnProgress').value = 0;
+    burnSetStatus(tf('burnRunning', { pct: 0 }));
+    burnUpdateButtons();
+
+    var v = document.createElement('video');
+    burn.video = v;
+    v.playsInline = true;
+    v.preload = 'auto';
+    v.src = state.mediaURL;
+    var chunks = [], audioOk = false, hasAudioSignal = false;
+    var metaReady = new Promise(function (resolve, reject) {
+      v.addEventListener('loadedmetadata', function () { resolve(); }, { once: true });
+      v.addEventListener('error', function () {
+        reject(new Error((v.error && v.error.message) || 'media load error'));
+      }, { once: true });
+    });
+    metaReady.then(function () {
+      if (burn.cancel) { burnAbortCancelled(); return; }
+      var w = v.videoWidth, h = v.videoHeight;
+      if (!w || !h) { burnFail(t('burnAudioOnly')); return; }
+      if (!isFinite(v.duration) || !(v.duration > 0)) {
+        burnFail('duration unknown'); return;
+      }
+      hasAudioSignal = !!((v.audioTracks && v.audioTracks.length) ||
+        v.mozHasAudio || (v.webkitAudioDecodedByteCount || 0) > 0);
+      var canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      var ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+      var stream = canvas.captureStream(30);
+      /* Audio: route the offscreen element through Web Audio into the
+         recording (not to the speakers, so the export stays silent in
+         the room). Fall back to the element's own captureStream audio. */
+      try {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) {
+          burn.actx = new AC();
+          var srcNode = burn.actx.createMediaElementSource(v);
+          var dest = burn.actx.createMediaStreamDestination();
+          srcNode.connect(dest);
+          if (burn.actx.resume) burn.actx.resume();
+          var at = dest.stream.getAudioTracks()[0];
+          if (at) { stream.addTrack(at); audioOk = true; }
+        }
+      } catch (e) { audioOk = false; }
+      if (!audioOk) {
+        try {
+          var cs = v.captureStream ? v.captureStream() : null;
+          var at2 = cs && cs.getAudioTracks()[0];
+          if (at2) { stream.addTrack(at2); audioOk = true; }
+        } catch (e) { }
+      }
+      var rec = new MediaRecorder(stream, {
+        mimeType: burn.mime,
+        videoBitsPerSecond: NK.burn.videoBitrate(w, h)
+      });
+      burn.rec = rec;
+      rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+      rec.onerror = function (e) { burnFail(String((e.error && e.error.message) || 'MediaRecorder error')); };
+      rec.onstop = function () {
+        if (burn.settled) return;
+        burn.settled = true;
+        burnCleanup();
+        burnFinishUi();
+        if (burn.cancel) { burnSetStatus(t('burnCancelled')); return; }
+        var name = NK.burn.outputName(burn.mime);
+        downloadBlob(name, new Blob(chunks, { type: burn.mime.split(';')[0] }));
+        burnSetStatus(tf('burnDone', { name: name }) +
+          ((hasAudioSignal && !audioOk) ? ' ' + t('burnNoAudio') : ''));
+      };
+      var lastDrawnT = -1;
+      function drawFrame() {
+        if (burn.settled || burn.cancel) return;
+        var tNow = v.currentTime;
+        if (tNow !== lastDrawnT) {
+          lastDrawnT = tNow;
+          try { ctx.drawImage(v, 0, 0, w, h); } catch (e) { }
+          burnDrawCue(ctx, w, h, tNow * 1000);
+          var pct = v.duration ? Math.min(100, Math.round(tNow / v.duration * 100)) : 0;
+          if (pct !== burn.lastPct) {
+            burn.lastPct = pct;
+            $('burnProgress').value = pct;
+            burnSetStatus(tf('burnRunning', { pct: pct }));
+          }
+        }
+        if (v.ended && rec.state !== 'inactive') { try { rec.stop(); } catch (e) { } }
+      }
+      /* Drive drawing from BOTH requestAnimationFrame (smooth while the
+         tab is visible) and a plain timer. rAF alone can be starved —
+         background tab, busy renderer — and would then silently skip
+         whole cue windows while the recorder keeps the wall-clock
+         timeline; the timer guarantees the drawing follows the video's
+         clock. drawFrame is idempotent (it draws only when the video
+         time actually changed), so the two drivers never double-draw. */
+      (function rafLoop() {
+        drawFrame();
+        if (!burn.settled && !burn.cancel) burn.rafId = requestAnimationFrame(rafLoop);
+      })();
+      burn.timerId = setInterval(drawFrame, 40);
+      v.addEventListener('ended', function () {
+        drawFrame(); /* land the final frame/cue before stopping */
+        if (rec.state !== 'inactive') { try { rec.stop(); } catch (e) { } }
+      });
+      rec.start(250);
+      drawFrame();
+      var p = v.play();
+      if (p && p.catch) p.catch(function (err) {
+        burnFail(String((err && err.message) || err));
+      });
+    }).catch(function (err) {
+      burnFail(String((err && err.message) || err));
+    });
+  });
+
   /* ---------- init ---------- */
   $('verLabel').textContent = 'v' + NK.version;
   restore();
@@ -1131,6 +1481,11 @@ NK.transcribe = {
   renderTxModels();
   txUpdateButtons();
   if (!state.mediaFile) txSetStatus(t('txNeedMedia'));
+  renderBurnInfo();
+  burn.mime = burnMimeType();
+  burnUpdateButtons();
+  if (!burn.mime) burnSetStatus(t('burnUnsupported'));
+  else if (!state.mediaFile) burnSetStatus(t('burnNeedMedia'));
   renderAll();
 })();
 </script>

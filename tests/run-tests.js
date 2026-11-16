@@ -24,9 +24,9 @@ function cueEq(a, b) {
 }
 
 /* ---- namespace / philosophy flags ---- */
-eq(NK.version, '2.1.0', 'NK.version');
+eq(NK.version, '2.2.0', 'NK.version');
 ok(NK.config.zeroDep && NK.config.singleFile && NK.config.localFirst && NK.config.zeroTelemetry, 'NK.config flags');
-ok(NK.features.phaseA && NK.features.phaseB && NK.features.phaseC && NK.features.phaseD && NK.features.phaseE && NK.features.phaseH, 'NK.features phases');
+ok(NK.features.phaseA && NK.features.phaseB && NK.features.phaseC && NK.features.phaseD && NK.features.phaseE && NK.features.phaseH && NK.features.phaseI, 'NK.features phases');
 
 /* ---- time ---- */
 eq(NK.time.parse('00:00:01,000'), 1000, 'parse srt time');
@@ -223,6 +223,73 @@ eq(TX.chunksToCues([{ text: 'no ts' }, { timestamp: ['x', 'y'], text: 'bad' }, n
 eq(TX.languageName('ja-JP'), 'japanese', 'languageName ja');
 eq(TX.languageName('en-US'), 'english', 'languageName en');
 eq(TX.languageName('fr-FR'), undefined, 'languageName unknown -> auto-detect');
+
+/* ---- burned-in subtitle export planning (Phase I) ---- */
+const BN = NK.burn;
+ok(!!BN, 'NK.burn exists');
+/* style mirrors the ASS export Default style: white text, black outline */
+eq(BN.STYLE.color, '#ffffff', 'burn style text colour matches ASS primary');
+eq(BN.STYLE.outlineColor, '#000000', 'burn style outline colour matches ASS outline');
+
+/* cue lookup: same rule as the editor highlight (start <= t < end) */
+const burnCues = [
+  { start: 1000, end: 2500, text: 'a' },
+  { start: 3000, end: 4500, text: 'b' }
+];
+eq(BN.cueAt(burnCues, 999), null, 'cueAt before first cue');
+eq(BN.cueAt(burnCues, 1000).text, 'a', 'cueAt start is inclusive');
+eq(BN.cueAt(burnCues, 2499).text, 'a', 'cueAt inside cue');
+eq(BN.cueAt(burnCues, 2500), null, 'cueAt end is exclusive');
+eq(BN.cueAt(burnCues, 3000).text, 'b', 'cueAt second cue');
+eq(BN.cueAt([], 1000), null, 'cueAt empty list');
+eq(BN.cueAt(null, 1000), null, 'cueAt null list');
+
+/* mime selection via injected predicate */
+eq(BN.pickMimeType(() => true), 'video/mp4', 'pickMimeType prefers mp4');
+eq(BN.pickMimeType(m => m === 'video/webm'), 'video/webm', 'pickMimeType falls back to plain webm');
+eq(BN.pickMimeType(m => m.indexOf('vp8') >= 0), 'video/webm;codecs=vp8,opus', 'pickMimeType vp8 before plain webm');
+eq(BN.pickMimeType(() => false), null, 'pickMimeType none supported');
+eq(BN.pickMimeType(null), null, 'pickMimeType missing predicate');
+eq(BN.pickMimeType(() => { throw new Error('x'); }), null, 'pickMimeType throwing predicate');
+
+/* output naming */
+eq(BN.outputName('video/mp4'), 'subtitled.mp4', 'outputName mp4');
+eq(BN.outputName('video/webm;codecs=vp9,opus'), 'subtitled.webm', 'outputName webm');
+eq(BN.outputName(null), 'subtitled.webm', 'outputName default');
+
+/* bitrate scales with pixels and is clamped */
+eq(BN.videoBitrate(320, 180), 2500000, 'videoBitrate floor');
+eq(BN.videoBitrate(1920, 1080), 10368000, 'videoBitrate 1080p');
+eq(BN.videoBitrate(7680, 4320), 16000000, 'videoBitrate ceiling');
+eq(BN.videoBitrate(0, 0), 2500000, 'videoBitrate zero size');
+
+/* wrapping with a fake monospace measurer: char width = fontPx / 2 */
+const fakeMeasure = (s, fontPx) => s.length * fontPx * 0.5;
+eq(BN.wrapLines('abcdefghijklmnopqrstu', 100, 20, fakeMeasure),
+   ['abcdefghij', 'klmnopqrst', 'u'], 'wrapLines wraps at measured width');
+eq(BN.wrapLines('abcdefghij', 100, 20, fakeMeasure), ['abcdefghij'], 'wrapLines exact fit not wrapped');
+eq(BN.wrapLines('ab\ncd', 100, 20, fakeMeasure), ['ab', 'cd'], 'wrapLines keeps explicit newlines');
+eq(BN.wrapLines('', 100, 20, fakeMeasure), [''], 'wrapLines empty text');
+eq(BN.wrapLines('short', 0, 20, fakeMeasure), ['short'], 'wrapLines no width limit');
+eq(BN.wrapLines('short', 100, 20, null), ['short'], 'wrapLines no measurer');
+
+/* layout at the ASS reference frame (384x288) must reproduce the ASS
+   Default style numbers exactly: font 48, MarginV 10, outline 2. */
+const layRef = BN.layout('テスト', 384, 288, fakeMeasure);
+eq(layRef.fontPx, 48, 'layout fontPx at reference height = ASS Fontsize 48');
+eq(layRef.marginV, 10, 'layout marginV at reference height = ASS MarginV 10');
+eq(layRef.outlinePx, 2, 'layout outlinePx at reference size = ASS Outline 2');
+eq(layRef.lines.length, 1, 'layout single line');
+eq(layRef.lines[0].x, 192, 'layout centred horizontally');
+eq(layRef.lines[0].y, 288 - 10 - Math.round(48 * 0.22), 'layout baseline above bottom margin');
+const layTwo = BN.layout('one\ntwo', 384, 288, fakeMeasure);
+eq(layTwo.lines.length, 2, 'layout two lines');
+eq(layTwo.lines[1].y - layTwo.lines[0].y, layTwo.lineHeightPx, 'layout lines stack by lineHeight');
+ok(layTwo.lines.every(l => l.y > 0 && l.y <= 288), 'layout baselines inside frame');
+const lay720 = BN.layout('x', 1280, 720, fakeMeasure);
+eq(lay720.fontPx, 120, 'layout fontPx scales with height (720 * 48/288)');
+const layWrap = BN.layout('abcdefghijklmnopqrstu', 200, 288, fakeMeasure);
+ok(layWrap.lines.length >= 2, 'layout wraps long text to frame width');
 
 console.log('tests: ' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
