@@ -1,8 +1,12 @@
 name: Release
 
 # Tag-driven release pipeline (Phase G-5).
-# Builds the Tauri shell for each desktop OS and attaches the bundles to a
-# draft GitHub release.
+# Builds the Tauri desktop app for each desktop OS and attaches the bundles
+# to a draft GitHub release.
+#
+# A manual run (workflow_dispatch) performs the same builds but creates NO
+# release; the bundles are uploaded as workflow artifacts instead, so the
+# pipeline can be verified without publishing anything.
 #
 # NOTE: Binaries are UNSIGNED. Code signing (Apple Developer Program,
 # Azure Trusted Signing) costs money and is intentionally out of scope;
@@ -12,6 +16,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -52,9 +57,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: src-tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Nukamiso ${{ github.ref_name }}'
+          # Only a tag push creates a (draft) release. On workflow_dispatch
+          # tagName stays empty, so the action only builds.
+          tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          releaseName: ${{ github.event_name == 'push' && format('Nukamiso {0}', github.ref_name) || '' }}
           releaseBody: 'Unsigned builds — see README.md for details.'
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Upload bundles as workflow artifacts (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nukamiso-bundles-${{ matrix.platform }}-${{ strategy.job-index }}
+          path: src-tauri/target/**/release/bundle/**
+          if-no-files-found: error

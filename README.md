@@ -1,10 +1,12 @@
 # Nukamiso
 
-音声入力で字幕を作り、編集し、書き出すための**単一ファイル HTML 字幕エディタ**です。
-`nukamiso.html` をブラウザで開くだけで動きます。インストールも、サーバーも、アカウントもありません。
+音声入力で字幕を作り、編集し、書き出すための**デスクトップアプリ**です。
+正規の製品形態は Tauri 製のデスクトップ版（Windows / macOS / Linux）で、
+アプリの中身は単一ファイル `nukamiso.html` そのものです。サーバーも、アカウントもありません。
 
-A **single-file HTML subtitle editor**: dictate subtitles with your voice, edit them, and export.
-Just open `nukamiso.html` in a browser. No install, no server, no account.
+A **desktop subtitle editor** (Tauri, for Windows / macOS / Linux): dictate subtitles
+with your voice, edit them, and export. The app embeds the single-file `nukamiso.html`
+as its entire frontend. No server, no account.
 
 ![Nukamiso editor](docs/screenshot-editor.png)
 
@@ -27,7 +29,7 @@ Just open `nukamiso.html` in a browser. No install, no server, no account.
 | D | ユーザー辞書: 誤認識→正表記の置換ルール。認識結果と読み込んだ字幕に適用 |
 | E | 波形ビュー: Web Audio API + canvas の自前実装（`NK.wave` に隔離、WaveSurfer.js 等の外部依存なし） |
 | F | テスト: Node 単体テスト + ランダム往復 fuzz + Electron 実 UI テスト |
-| G | 配布: Tauri 2.x の殻（`src-tauri/`）とタグ駆動のリリース workflow |
+| G | 配布: Tauri 2.x デスクトップ版が正規の製品形態（`src-tauri/`）。タグ駆動のリリース workflow で各 OS 向けにビルド |
 | H | ファイル文字起こし: 既存の音声/動画ファイルから**端末内で**文字起こしし、時刻付き字幕行にする（Whisper を端末内で実行。WebGPU 対応環境では WebGPU、非対応では WASM に自動で切り替える）。モデルは Tiny / Base / Small / Medium / Large v3 Turbo の5種から選択式（約42MB〜約1,088MB）。精度はモデル規模で大きく変わり、第三者ベンチマーク（transcriber.tools、2026-10-29測定）では日本語の文字誤り率が Base 26.3% → Large v3 Turbo 8.9%（自前実測ではない）。30秒ずつ処理し進捗表示と中断が可能。エンジン（Transformers.js、版固定）とモデルは利用者の明示操作でのみダウンロードし、取得元とサイズを事前に表示する。音声データは送信されない |
 | I | 焼き込み書き出し: 開いた動画に現在の字幕を焼き込み、新しい動画ファイル（ブラウザ対応形式の MP4 または WebM）として書き出す。Canvas + MediaRecorder の標準機能だけで端末内で再エンコードし、通信は一切しない。字幕の見た目は ASS 書き出しと同じ仕様（白文字・黒縁・下部中央）。再生しながらの処理のため再生時間とほぼ同じ時間がかかり、結果全体をメモリに保持する（長尺の限界は下記） |
 
@@ -38,7 +40,7 @@ File System Access API による保存（非対応環境ではダウンロード
 
 ## 使い方 (Usage)
 
-1. `nukamiso.html` をブラウザで開く
+1. デスクトップ版を起動する（`nukamiso.html` をブラウザで開いても同じ画面が動きます）
 2. 「動画/音声を開く」でメディアを読み込む（任意）
 3. 🎙「音声入力開始」で話すか、「字幕を開く」で既存字幕を読み込むか、表で直接編集する
 4. 形式を選んで「保存」
@@ -67,15 +69,19 @@ node tests/run-tests.js          # コアロジック単体 + fuzz（依存ゼ�
 xvfb-run -a <electron-binary> tests/ui-main.js --no-sandbox
 ```
 
-## デスクトップ版 (Tauri)
+## デスクトップ版 (Tauri) — 正規の製品形態
 
-`src-tauri/` に Tauri 2.x の殻があります。同じ `nukamiso.html` をそのまま内包します。
+Nukamiso の正規の製品形態は、この Tauri 2.x デスクトップ版です。
+`src-tauri/` の殻が `nukamiso.html` をそのまま内包します（単一ファイルは
+アプリの中身としての位置づけで、原則は殻の中でも変わりません）。
 
 ```sh
 cd src-tauri && cargo build
 ```
 
-タグ（`v*`）を push すると `.github/workflows/release.yml` が各 OS 向けにビルドします。
+タグ（`v*`）を push すると `.github/workflows/release.yml` が各 OS 向けにビルドし、
+下書き Release に成果物を添付します。同じ workflow を手動実行（workflow_dispatch）
+すると、Release を作らずにビルド成果物だけを Actions の artifact として確認できます。
 
 > **署名について**: リリースバイナリは**未署名**です。コード署名（Apple Developer /
 > Azure Trusted Signing）は年間費用がかかるため行っていません。OS の警告が出る場合は、
