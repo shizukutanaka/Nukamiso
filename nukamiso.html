@@ -7,7 +7,10 @@
      two pinned origins used when (and only when) the user explicitly downloads
      the optional on-device transcription engine/model (Phase H):
      cdn.jsdelivr.net (engine code) and huggingface.co + *.hf.co (model files).
-     Audio and subtitle data are never transmitted; inference runs locally. -->
+     This page itself never transmits audio or subtitle data, and file
+     transcription inference runs locally. Live voice input is different:
+     it uses the browser's own speech recognition (in Chrome, recognition
+     happens on Google's servers) — see the note next to the 🎙 button. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src blob: https://cdn.jsdelivr.net; connect-src https://cdn.jsdelivr.net https://huggingface.co https://cdn-lfs.huggingface.co https://*.hf.co; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Nukamiso — Subtitle Editor</title>
 <style>
@@ -114,6 +117,7 @@ label.chk{font-size:12px;color:var(--sub);display:inline-flex;gap:4px;align-item
       </div>
       <div id="asrInterim"></div>
       <div id="asrUnsupported" class="hidden" style="color:var(--warn);font-size:12px" data-i18n="asrUnsupported">このブラウザは音声認識に対応していません。手入力で全機能が使えます。</div>
+      <div id="asrNote" style="color:var(--warn);font-size:12px;margin-top:4px" data-i18n="asrNote">音声入力はブラウザの音声認識（Web Speech API）を使います。Chrome では音声が Google のサーバーで認識されるため、この方法では音声が端末の外に出ます。音声を端末の外に出したくない場合は、録音したメディアファイルを下の「ファイルから文字起こし（端末内）」で処理してください。</div>
       <div style="border-top:1px solid var(--line);margin-top:10px;padding-top:10px">
         <div style="font-weight:bold;margin-bottom:4px">📄 <span data-i18n="txTitle">ファイルから文字起こし（端末内）</span></div>
         <div id="txInfo" style="font-size:12px;color:var(--sub)"></div>
@@ -151,7 +155,7 @@ label.chk{font-size:12px;color:var(--sub);display:inline-flex;gap:4px;align-item
     </div>
   </section>
 </main>
-<footer>Nukamiso — Single-file / Zero-dependency / Local-first / Zero-telemetry. <span data-i18n="footerNote">データはこの端末の外に出ません。</span></footer>
+<footer>Nukamiso — Single-file / Zero-dependency / Local-first / Zero-telemetry. <span data-i18n="footerNote">データはこの端末内にのみ保存されます（音声入力の例外はメディア欄の注記をご覧ください）。</span></footer>
 
 <script>
 'use strict';
@@ -802,8 +806,9 @@ NK.burn = {
       colStart: '開始', colEnd: '終了', colText: 'テキスト', dictTitle: 'ユーザー辞書', dictFrom: '誤認識（例: ぬかみそ）',
       dictTo: '正表記（例: 糠味噌）', add: '追加', media: 'メディア', asrStart: '音声入力開始', asrStop: '音声入力停止',
       asrUnsupported: 'このブラウザは音声認識に対応していません。手入力で全機能が使えます。',
+      asrNote: '音声入力はブラウザの音声認識（Web Speech API）を使います。Chrome では音声が Google のサーバーで認識されるため、この方法では音声が端末の外に出ます。音声を端末の外に出したくない場合は、録音したメディアファイルを下の「ファイルから文字起こし（端末内）」で処理してください。',
       track2: '翻訳トラック（第2言語）', copyTiming: 'タイミングを複写', saveTrack2: '第2トラックを保存',
-      footerNote: 'データはこの端末の外に出ません。', listening: '聞き取り中…', split: '分割', merge: '結合', del: '削除',
+      footerNote: 'データはこの端末内にのみ保存されます（音声入力の例外はメディア欄の注記をご覧ください）。', listening: '聞き取り中…', split: '分割', merge: '結合', del: '削除',
       noIssues: '問題は見つかりませんでした。', saved: '保存しました',
       txTitle: 'ファイルから文字起こし（端末内）', txLoad: 'エンジンをダウンロード', txLoaded: 'エンジン読込済み',
       txStart: '文字起こし開始', txCancel: '中断',
@@ -836,8 +841,9 @@ NK.burn = {
       colStart: 'Start', colEnd: 'End', colText: 'Text', dictTitle: 'User dictionary', dictFrom: 'Mis-recognized (e.g. nukamiso)',
       dictTo: 'Correct form', add: 'Add', media: 'Media', asrStart: 'Start voice input', asrStop: 'Stop voice input',
       asrUnsupported: 'This browser does not support speech recognition. All features remain available via manual input.',
+      asrNote: 'Voice input uses the browser\'s speech recognition (Web Speech API). In Chrome, your voice is recognized on Google\'s servers, so with this method audio does leave the device. To keep audio fully on-device, record it to a media file and use "Transcribe a file (on-device)" below instead.',
       track2: 'Translation track (2nd language)', copyTiming: 'Copy timing', saveTrack2: 'Save track 2',
-      footerNote: 'Your data never leaves this device.', listening: 'Listening…', split: 'Split', merge: 'Merge', del: 'Delete',
+      footerNote: 'Your data is stored only on this device (see the note in the Media panel for the voice-input exception).', listening: 'Listening…', split: 'Split', merge: 'Merge', del: 'Delete',
       noIssues: 'No issues found.', saved: 'Saved',
       txTitle: 'Transcribe a file (on-device)', txLoad: 'Download engine', txLoaded: 'Engine ready',
       txStart: 'Start transcription', txCancel: 'Cancel',

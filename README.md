@@ -15,13 +15,13 @@ Just open `nukamiso.html` in a browser. No install, no server, no account.
 - **Single-file** — 本体は `nukamiso.html` ひとつだけ
 - **Zero-dependency** — 外部ライブラリ・CDN・Web フォントを一切読み込まない（唯一の例外は Phase H の文字起こしエンジンで、利用者の明示操作でのみ取得する。既定では読み込まれない）
 - **Local-first** — データは端末内（localStorage）だけに保存される
-- **Zero-telemetry** — テレメトリ送信は一切しない。通信先は CSP で Phase H の取得先（jsDelivr / Hugging Face）だけに限定され、それも利用者がダウンロードボタンを押したときだけ使う。音声・字幕データは端末の外に出ない
+- **Zero-telemetry** — テレメトリ送信は一切しない。通信先は CSP で Phase H の取得先（jsDelivr / Hugging Face）だけに限定され、それも利用者がダウンロードボタンを押したときだけ使う。ファイル文字起こし・編集・書き出しでは音声・字幕データは端末の外に出ない。唯一の例外は音声入力（Phase A）で、ブラウザの音声認識を使うため Chrome ではブラウザ側でサーバー認識が行われる（画面上の注記と PRIVACY.md で開示）
 
 ## 機能 (Features)
 
 | Phase | 機能 |
 |---|---|
-| A | 音声入力（Web Speech API）。確定結果がタイムスタンプ付き字幕行になる。非対応ブラウザでは手入力で全機能が使える |
+| A | 音声入力（Web Speech API）。確定結果がタイムスタンプ付き字幕行になる。非対応ブラウザでは手入力で全機能が使える。なお認識はブラウザ実装依存で、Chrome では Google のサーバー認識を使うため、この経路では音声が端末の外に出る（UI に注記を表示）。完全ローカルで処理したい場合は Phase H のファイル文字起こしを使う |
 | B | SRT / VTT / ASS / TXT の読み込みと書き出し（往復で意味を保存） |
 | C | 翻訳ペイン: 第2言語トラックを並べて編集（外部 API 不使用、辞書置換で支援） |
 | D | ユーザー辞書: 誤認識→正表記の置換ルール。認識結果と読み込んだ字幕に適用 |
