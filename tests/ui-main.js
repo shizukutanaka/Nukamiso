@@ -35,7 +35,7 @@ app.whenReady().then(async () => {
   const run = (code) => win.webContents.executeJavaScript(code, true);
 
   try {
-    check('NK namespace exists', await run('typeof NK === "object" && NK.version === "2.2.0"'));
+    check('NK namespace exists', await run('typeof NK === "object" && NK.version === "2.3.0"'));
     check('wave module isolated', await run('!!(NK.wave && NK.waveSurfer === NK.wave)'));
     check('ASR unsupported notice handled', await run('!!document.getElementById("asrUnsupported")'));
 
