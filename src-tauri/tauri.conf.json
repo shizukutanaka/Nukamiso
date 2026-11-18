@@ -19,7 +19,11 @@
     "active": true,
     "category": "Utility",
     "icon": [
-      "icons/icon.png"
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
     ],
     "longDescription": "Nukamiso is a zero-dependency, local-first subtitle editor. Dictate subtitles with your voice, edit them, and export SRT/VTT/ASS/TXT. Your data never leaves the device.",
     "shortDescription": "Local-first desktop subtitle editor",
