@@ -24,7 +24,7 @@ function cueEq(a, b) {
 }
 
 /* ---- namespace / philosophy flags ---- */
-eq(NK.version, '2.2.0', 'NK.version');
+eq(NK.version, '2.3.0', 'NK.version');
 ok(NK.config.zeroDep && NK.config.singleFile && NK.config.localFirst && NK.config.zeroTelemetry, 'NK.config flags');
 ok(NK.features.phaseA && NK.features.phaseB && NK.features.phaseC && NK.features.phaseD && NK.features.phaseE && NK.features.phaseH && NK.features.phaseI, 'NK.features phases');
 
@@ -177,8 +177,18 @@ ok(garbageFail === 0, 'fuzz garbage inputs (2000 iters) never throw');
 const TX = NK.transcribe;
 ok(!!TX, 'NK.transcribe exists');
 ok(/^https:\/\/cdn\.jsdelivr\.net\//.test(TX.ENGINE_URL) && TX.ENGINE_URL.includes('@3.7.2'), 'engine URL is pinned (Transformers.js 3.7.2 on jsDelivr)');
-eq(TX.MODELS.length, 2, 'two models offered');
-ok(TX.MODELS.every(m => /^Xenova\/whisper-/.test(m.id) && m.sizeMB > 0 && m.labelJa && m.labelEn), 'model metadata complete');
+eq(TX.MODELS.length, 5, 'five models offered');
+ok(TX.MODELS.every(m => /^(Xenova|onnx-community)\/whisper-/.test(m.id) && m.sizeMB > 0 && m.labelJa && m.labelEn), 'model metadata complete');
+ok(new Set(TX.MODELS.map(m => m.id)).size === TX.MODELS.length, 'model ids unique');
+ok(TX.MODELS.every((m, i) => i === 0 || m.sizeMB > TX.MODELS[i - 1].sizeMB), 'model sizes ascend with capability');
+eq(TX.MODELS[0].id, 'Xenova/whisper-tiny', 'smallest model stays the default (first entry)');
+eq(TX.MODELS[TX.MODELS.length - 1].id, 'onnx-community/whisper-large-v3-turbo', 'largest model is large-v3-turbo');
+
+/* inference backend choice: WebGPU when offered, WASM otherwise */
+eq(TX.pickDevice(true), 'webgpu', 'pickDevice uses WebGPU when offered');
+eq(TX.pickDevice(false), 'wasm', 'pickDevice falls back to WASM');
+eq(TX.pickDevice(undefined), 'wasm', 'pickDevice unknown capability -> WASM');
+eq(TX.pickDevice(null), 'wasm', 'pickDevice null capability -> WASM');
 ok(TX.ENGINE_SIZE_MB > 0 && TX.SAMPLE_RATE === 16000 && TX.CHUNK_MS === 30000, 'transcribe constants');
 
 /* chunk planning */

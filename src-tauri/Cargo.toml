@@ -1,6 +1,6 @@
 [package]
 name = "nukamiso"
-version = "2.2.0"
+version = "2.3.0"
 description = "Nukamiso — single-file, zero-dependency, local-first subtitle editor"
 edition = "2021"
 

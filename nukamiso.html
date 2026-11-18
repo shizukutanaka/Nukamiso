@@ -7,7 +7,10 @@
      two pinned origins used when (and only when) the user explicitly downloads
      the optional on-device transcription engine/model (Phase H):
      cdn.jsdelivr.net (engine code) and huggingface.co + *.hf.co (model files).
-     Audio and subtitle data are never transmitted; inference runs locally. -->
+     This page itself never transmits audio or subtitle data, and file
+     transcription inference runs locally. Live voice input is different:
+     it uses the browser's own speech recognition (in Chrome, recognition
+     happens on Google's servers) — see the note next to the 🎙 button. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src blob: https://cdn.jsdelivr.net; connect-src https://cdn.jsdelivr.net https://huggingface.co https://cdn-lfs.huggingface.co https://*.hf.co; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Nukamiso — Subtitle Editor</title>
 <style>
@@ -114,6 +117,7 @@ label.chk{font-size:12px;color:var(--sub);display:inline-flex;gap:4px;align-item
       </div>
       <div id="asrInterim"></div>
       <div id="asrUnsupported" class="hidden" style="color:var(--warn);font-size:12px" data-i18n="asrUnsupported">このブラウザは音声認識に対応していません。手入力で全機能が使えます。</div>
+      <div id="asrNote" style="color:var(--warn);font-size:12px;margin-top:4px" data-i18n="asrNote">音声入力はブラウザの音声認識（Web Speech API）を使います。Chrome では音声が Google のサーバーで認識されるため、この方法では音声が端末の外に出ます。音声を端末の外に出したくない場合は、録音したメディアファイルを下の「ファイルから文字起こし（端末内）」で処理してください。</div>
       <div style="border-top:1px solid var(--line);margin-top:10px;padding-top:10px">
         <div style="font-weight:bold;margin-bottom:4px">📄 <span data-i18n="txTitle">ファイルから文字起こし（端末内）</span></div>
         <div id="txInfo" style="font-size:12px;color:var(--sub)"></div>
@@ -151,7 +155,7 @@ label.chk{font-size:12px;color:var(--sub);display:inline-flex;gap:4px;align-item
     </div>
   </section>
 </main>
-<footer>Nukamiso — Single-file / Zero-dependency / Local-first / Zero-telemetry. <span data-i18n="footerNote">データはこの端末の外に出ません。</span></footer>
+<footer>Nukamiso — Single-file / Zero-dependency / Local-first / Zero-telemetry. <span data-i18n="footerNote">データはこの端末内にのみ保存されます（音声入力の例外はメディア欄の注記をご覧ください）。</span></footer>
 
 <script>
 'use strict';
@@ -160,7 +164,7 @@ label.chk{font-size:12px;color:var(--sub);display:inline-flex;gap:4px;align-item
 var NK = (typeof window !== 'undefined' && window.NK) ? window.NK : {};
 if (typeof window !== 'undefined') window.NK = NK;
 
-NK.version = '2.2.0';
+NK.version = '2.3.0';
 /* These flags describe the shipped file itself: it bundles no dependencies,
    sends no telemetry, and by default makes no network requests at all.
    Phase H is the single opt-in exception: the transcription engine/model are
@@ -505,8 +509,9 @@ NK.cues = {
    Pure planning/conversion logic lives here so Node tests can pin it down.
    The browser-only parts (engine download, audio decode, worker) are in the
    UI section. The engine is Transformers.js (pinned) running OpenAI Whisper
-   ONNX models (quantized, q8) fully on-device via WASM. Nothing is fetched
-   until the user explicitly asks, and audio is never transmitted. */
+   ONNX models (quantized, q8) fully on-device: WebGPU where the browser
+   offers it, WASM otherwise. Nothing is fetched until the user explicitly
+   asks, and audio is never transmitted. */
 NK.transcribe = {
   /* Pinned engine build (Transformers.js 3.7.2, jsDelivr bundled ESM). */
   ENGINE_URL: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2/+esm',
@@ -515,13 +520,21 @@ NK.transcribe = {
      onnxruntime WASM binary), shown to the user before downloading. */
   ENGINE_SIZE_MB: 23,
   MODEL_SOURCE: 'huggingface.co',
-  /* Whisper models (ONNX q8) hosted on Hugging Face Hub. License: Apache-2.0
-     (per the model repositories' metadata). Sizes are the measured totals of
-     the files the engine actually downloads (encoder + merged decoder +
-     tokenizer/config), rounded up. */
+  /* Whisper models (ONNX q8) hosted on Hugging Face Hub: Xenova builds,
+     plus the ONNX community build for large-v3-turbo, which Xenova does
+     not publish. License: Apache-2.0 (per the model repositories'
+     metadata). Sizes are the measured totals of the files the engine
+     actually downloads (encoder + merged decoder + tokenizer/config),
+     rounded up. Larger models are more accurate but slower and heavier:
+     on a third-party Japanese benchmark (transcriber.tools, measured
+     2026-10-29) the character error rate falls from 26.3% (base) to
+     8.9% (large-v3-turbo); this app does not re-measure them. */
   MODELS: [
     { id: 'Xenova/whisper-tiny', sizeMB: 42, labelJa: 'Whisper Tiny（高速・軽量）', labelEn: 'Whisper Tiny (fast, small)' },
-    { id: 'Xenova/whisper-base', sizeMB: 80, labelJa: 'Whisper Base（高精度・日本語向き）', labelEn: 'Whisper Base (accurate, better for Japanese)' }
+    { id: 'Xenova/whisper-base', sizeMB: 80, labelJa: 'Whisper Base（Tiny より高精度・日本語向き）', labelEn: 'Whisper Base (more accurate than Tiny, better for Japanese)' },
+    { id: 'Xenova/whisper-small', sizeMB: 253, labelJa: 'Whisper Small（Base より高精度）', labelEn: 'Whisper Small (more accurate than Base)' },
+    { id: 'Xenova/whisper-medium', sizeMB: 780, labelJa: 'Whisper Medium（Small より高精度・低速）', labelEn: 'Whisper Medium (more accurate than Small, slower)' },
+    { id: 'onnx-community/whisper-large-v3-turbo', sizeMB: 1088, labelJa: 'Whisper Large v3 Turbo（最も高精度・大容量）', labelEn: 'Whisper Large v3 Turbo (most accurate, very large)' }
   ],
   SAMPLE_RATE: 16000,
   CHUNK_MS: 30000, /* Whisper's context window is 30 seconds. */
@@ -574,6 +587,13 @@ NK.transcribe = {
     if (uiLang === 'ja-JP') return 'japanese';
     if (uiLang === 'en-US') return 'english';
     return undefined;
+  },
+  /* Inference backend choice: WebGPU when the browser exposes it, WASM
+     otherwise. Pure decision (the caller passes the capability) so tests
+     can pin it. The worker retries on WASM if creating the pipeline on
+     WebGPU fails, so a broken GPU path never blocks transcription. */
+  pickDevice: function (hasWebGPU) {
+    return hasWebGPU ? 'webgpu' : 'wasm';
   }
 };
 
@@ -786,8 +806,9 @@ NK.burn = {
       colStart: '開始', colEnd: '終了', colText: 'テキスト', dictTitle: 'ユーザー辞書', dictFrom: '誤認識（例: ぬかみそ）',
       dictTo: '正表記（例: 糠味噌）', add: '追加', media: 'メディア', asrStart: '音声入力開始', asrStop: '音声入力停止',
       asrUnsupported: 'このブラウザは音声認識に対応していません。手入力で全機能が使えます。',
+      asrNote: '音声入力はブラウザの音声認識（Web Speech API）を使います。Chrome では音声が Google のサーバーで認識されるため、この方法では音声が端末の外に出ます。音声を端末の外に出したくない場合は、録音したメディアファイルを下の「ファイルから文字起こし（端末内）」で処理してください。',
       track2: '翻訳トラック（第2言語）', copyTiming: 'タイミングを複写', saveTrack2: '第2トラックを保存',
-      footerNote: 'データはこの端末の外に出ません。', listening: '聞き取り中…', split: '分割', merge: '結合', del: '削除',
+      footerNote: 'データはこの端末内にのみ保存されます（音声入力の例外はメディア欄の注記をご覧ください）。', listening: '聞き取り中…', split: '分割', merge: '結合', del: '削除',
       noIssues: '問題は見つかりませんでした。', saved: '保存しました',
       txTitle: 'ファイルから文字起こし（端末内）', txLoad: 'エンジンをダウンロード', txLoaded: 'エンジン読込済み',
       txStart: '文字起こし開始', txCancel: '中断',
@@ -820,8 +841,9 @@ NK.burn = {
       colStart: 'Start', colEnd: 'End', colText: 'Text', dictTitle: 'User dictionary', dictFrom: 'Mis-recognized (e.g. nukamiso)',
       dictTo: 'Correct form', add: 'Add', media: 'Media', asrStart: 'Start voice input', asrStop: 'Stop voice input',
       asrUnsupported: 'This browser does not support speech recognition. All features remain available via manual input.',
+      asrNote: 'Voice input uses the browser\'s speech recognition (Web Speech API). In Chrome, your voice is recognized on Google\'s servers, so with this method audio does leave the device. To keep audio fully on-device, record it to a media file and use "Transcribe a file (on-device)" below instead.',
       track2: 'Translation track (2nd language)', copyTiming: 'Copy timing', saveTrack2: 'Save track 2',
-      footerNote: 'Your data never leaves this device.', listening: 'Listening…', split: 'Split', merge: 'Merge', del: 'Delete',
+      footerNote: 'Your data is stored only on this device (see the note in the Media panel for the voice-input exception).', listening: 'Listening…', split: 'Split', merge: 'Merge', del: 'Delete',
       noIssues: 'No issues found.', saved: 'Saved',
       txTitle: 'Transcribe a file (on-device)', txLoad: 'Download engine', txLoaded: 'Engine ready',
       txStart: 'Start transcription', txCancel: 'Cancel',
@@ -1179,17 +1201,30 @@ NK.burn = {
         self.postMessage({ type: 'error', id: id || null, message: String((err && err.message) || err) });
       }
       if (msg.type === 'load') {
+        /* Prefer WebGPU where the browser offers it; if pipeline creation
+           fails there, retry once on WASM so a broken GPU path never makes
+           transcription unavailable. The backend actually used is reported
+           back with the 'loaded' message and shown in the UI. */
+        var wantGpu = !!(self.navigator && self.navigator.gpu);
         import(msg.engineUrl).then(function (lib) {
           lib.env.allowLocalModels = false;
-          return lib.pipeline('automatic-speech-recognition', msg.model, {
-            dtype: 'q8',
-            progress_callback: function (p) {
-              self.postMessage({ type: 'progress', file: p.file || '', loaded: p.loaded || 0, total: p.total || 0 });
-            }
+          function attempt(dev) {
+            return lib.pipeline('automatic-speech-recognition', msg.model, {
+              dtype: 'q8',
+              device: dev,
+              progress_callback: function (p) {
+                self.postMessage({ type: 'progress', file: p.file || '', loaded: p.loaded || 0, total: p.total || 0 });
+              }
+            }).then(function (p) { return { pipe: p, device: dev }; });
+          }
+          var first = wantGpu ? 'webgpu' : 'wasm';
+          return attempt(first).catch(function (err) {
+            if (first !== 'webgpu') throw err;
+            return attempt('wasm');
           });
-        }).then(function (p) {
-          asr = p;
-          self.postMessage({ type: 'loaded' });
+        }).then(function (r) {
+          asr = r.pipe;
+          self.postMessage({ type: 'loaded', device: r.device });
         }).catch(function (err) { fail(null, err); });
       } else if (msg.type === 'transcribe') {
         if (!asr) { fail(msg.id, new Error('engine not loaded')); return; }
@@ -1225,7 +1260,7 @@ NK.burn = {
         tx.busy = false; tx.loading = false; tx.ready = true;
         tx.readyModel = tx.loadingModel;
         $('txProgress').classList.add('hidden');
-        txSetStatus(t('txReady'));
+        txSetStatus(t('txReady') + ' [' + (msg.device === 'webgpu' ? 'WebGPU' : 'WASM') + ']');
         txUpdateButtons();
       } else if (msg.type === 'result') {
         var p = tx.pending[msg.id];
