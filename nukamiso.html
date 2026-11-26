@@ -810,6 +810,8 @@ NK.burn = {
       track2: '翻訳トラック（第2言語）', copyTiming: 'タイミングを複写', saveTrack2: '第2トラックを保存',
       footerNote: 'データはこの端末内にのみ保存されます（音声入力の例外はメディア欄の注記をご覧ください）。', listening: '聞き取り中…', split: '分割', merge: '結合', del: '削除',
       noIssues: '問題は見つかりませんでした。', saved: '保存しました',
+      persistFailed: '自動保存に失敗しました（ブラウザの保存領域が使えません）。作業内容は「保存」ボタンでファイルに書き出してください。',
+      restoreFailed: '保存データの読み込みに失敗したため、元のデータを退避しました。',
       txTitle: 'ファイルから文字起こし（端末内）', txLoad: 'エンジンをダウンロード', txLoaded: 'エンジン読込済み',
       txStart: '文字起こし開始', txCancel: '中断',
       txInfo: 'エンジン（{engineSrc}、約{engineMB}MB）とモデル（{modelSrc}、約{modelMB}MB）は、このボタンを押したときだけダウンロードされます。音声・字幕データは端末の外に送信されません（認識は端末内で実行）。モデルはブラウザに保存され、次回は再ダウンロード不要です。',
@@ -845,6 +847,8 @@ NK.burn = {
       track2: 'Translation track (2nd language)', copyTiming: 'Copy timing', saveTrack2: 'Save track 2',
       footerNote: 'Your data is stored only on this device (see the note in the Media panel for the voice-input exception).', listening: 'Listening…', split: 'Split', merge: 'Merge', del: 'Delete',
       noIssues: 'No issues found.', saved: 'Saved',
+      persistFailed: 'Auto-save failed (browser storage is unavailable). Please export your work to a file with the Save button.',
+      restoreFailed: 'Saved data could not be loaded; the original data was preserved under a backup key.',
       txTitle: 'Transcribe a file (on-device)', txLoad: 'Download engine', txLoaded: 'Engine ready',
       txStart: 'Start transcription', txCancel: 'Cancel',
       txInfo: 'The engine ({engineSrc}, ~{engineMB} MB) and model ({modelSrc}, ~{modelMB} MB) are downloaded only when you press this button. Audio and subtitle data are never sent anywhere (recognition runs on this device). The model is cached by the browser, so it is not downloaded again next time.',
@@ -891,20 +895,32 @@ NK.burn = {
       localStorage.setItem(LS_KEY, JSON.stringify({
         cues: state.cues, cues2: state.cues2, dict: NK.dict.entries, lang: lang
       }));
-    } catch (e) { }
+    } catch (e) {
+      flash(t('persistFailed'));
+    }
   }
   var persistTimer = null;
   function persistSoon() { clearTimeout(persistTimer); persistTimer = setTimeout(persist, 300); }
   function restore() {
+    var raw;
     try {
-      var raw = localStorage.getItem(LS_KEY);
-      if (!raw) return;
+      raw = localStorage.getItem(LS_KEY);
+    } catch (e) {
+      return;
+    }
+    if (!raw) return;
+    try {
       var s = JSON.parse(raw);
       if (Array.isArray(s.cues)) state.cues = s.cues;
       if (Array.isArray(s.cues2)) state.cues2 = s.cues2;
       if (Array.isArray(s.dict)) NK.dict.entries = s.dict;
       if (s.lang) lang = s.lang;
-    } catch (e) { }
+    } catch (e) {
+      try {
+        localStorage.setItem(LS_KEY + '.backup', raw);
+      } catch (e2) { }
+      flash(t('restoreFailed'));
+    }
   }
 
   /* ---------- cue tables ---------- */
